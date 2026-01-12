@@ -31,17 +31,17 @@ class HillShade(BaseAlgorithm):
 
     def __call__(self, img: ImageData) -> ImageData:
         """Create hillshade from DEM dataset."""
-        x, y = numpy.gradient(img.array[0])
-        x *= self.z_exaggeration
-        y *= self.z_exaggeration
+        x = numpy.gradient(img.array[0], abs(img.transform[0]), axis=1)
+        y = numpy.gradient(img.array[0], abs(img.transform[4]), axis=0)
+        x *= self.z_exaggeration # can be removed if not needed since it just multiples the entire array by 1 resulting in the same value
+        y *= self.z_exaggeration # can be commented out as per product decision
         slope = numpy.pi / 2.0 - numpy.arctan(numpy.sqrt(x * x + y * y))
         aspect = numpy.arctan2(-x, y)
         azimuth = 360.0 - self.azimuth
-        azimuthrad = numpy.deg2rad(azimuth)
         altituderad = numpy.deg2rad(self.angle_altitude)
         shaded = numpy.sin(altituderad) * numpy.sin(slope) + numpy.cos(
             altituderad
-        ) * numpy.cos(slope) * numpy.cos(azimuthrad - aspect)
+        ) * numpy.cos(slope) * numpy.cos(numpy.deg2rad(azimuth) - aspect)
         data = 255 * (shaded + 1) / 2
         data[data < 0] = 0  # set hillshade values to min of 0.
 
