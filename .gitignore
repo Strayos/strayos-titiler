@@ -111,3 +111,4 @@ deployment/k8s/titiler/values-test.yaml
 .vscode/
 
 dev_notebooks/*
+scratch/

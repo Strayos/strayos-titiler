@@ -373,8 +373,8 @@ def landing(
 ):
     """TiTiler landing page."""
     data = {
-        "title": "TiTiler",
-        "description": "A modern dynamic tile server built on top of FastAPI and Rasterio/GDAL.",
+        "title": "Strayos TiTiler",
+        "description": "A modern dynamic tile server built on top of FastAPI and Rasterio/GDAL. Customized for and used by Strayos",
         "links": [
             {
                 "title": "Landing page",
@@ -507,6 +507,20 @@ def conformance(
 
     return data
 
+
+if api_settings.sentry_dsn:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
+
+    sentry_sdk.init(
+        dsn=api_settings.sentry_dsn,
+        traces_sample_rate=api_settings.sentry_traces_sample_rate,
+        integrations=[
+            FastApiIntegration(),
+            LoggingIntegration(),
+        ],
+    )
 
 if api_settings.telemetry_enabled:
     from opentelemetry import trace
