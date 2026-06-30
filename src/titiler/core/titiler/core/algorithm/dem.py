@@ -12,6 +12,13 @@ from titiler.core.algorithm.base import BaseAlgorithm
 __all__ = ["HillShade", "Slope", "Contours", "Terrarium", "TerrainRGB"]
 
 
+def _dem_band_for_math(img: ImageData):
+    """Return a plain array when the DEM band is fully valid."""
+    band = img.array[0]
+    dem = band if numpy.ma.is_masked(band) else img.array.data[0]
+    return dem.astype("float32", copy=False)
+
+
 class HillShade(BaseAlgorithm):
     """Hillshade."""
 
@@ -31,18 +38,24 @@ class HillShade(BaseAlgorithm):
 
     def __call__(self, img: ImageData) -> ImageData:
         """Create hillshade from DEM dataset."""
-        x = numpy.gradient(img.array[0], abs(img.transform[0]), axis=1)
-        y = numpy.gradient(img.array[0], abs(img.transform[4]), axis=0)
-        x *= self.z_exaggeration # can be removed if not needed since it just multiples the entire array by 1 resulting in the same value
-        y *= self.z_exaggeration # can be commented out as per product decision
-        slope = numpy.pi / 2.0 - numpy.arctan(numpy.sqrt(x * x + y * y))
+        dem = _dem_band_for_math(img)
+        x = numpy.gradient(dem, numpy.float32(abs(img.transform[0])), axis=1)
+        y = numpy.gradient(dem, numpy.float32(abs(img.transform[4])), axis=0)
+        if self.z_exaggeration != 1.0:
+            x *= self.z_exaggeration
+            y *= self.z_exaggeration
+        slope = numpy.float32(numpy.pi / 2.0) - numpy.arctan(
+            numpy.sqrt(x * x + y * y)
+        )
         aspect = numpy.arctan2(-x, y)
-        azimuth = 360.0 - self.azimuth
-        altituderad = numpy.deg2rad(self.angle_altitude)
-        shaded = numpy.sin(altituderad) * numpy.sin(slope) + numpy.cos(
-            altituderad
-        ) * numpy.cos(slope) * numpy.cos(numpy.deg2rad(azimuth) - aspect)
-        data = 255 * (shaded + 1) / 2
+        azimuth = numpy.float32(numpy.deg2rad(numpy.float32(360.0 - self.azimuth)))
+        altitude = numpy.float32(numpy.deg2rad(numpy.float32(self.angle_altitude)))
+        sin_altitude = numpy.float32(numpy.sin(altitude))
+        cos_altitude = numpy.float32(numpy.cos(altitude))
+        shaded = sin_altitude * numpy.sin(slope) + cos_altitude * numpy.cos(
+            slope
+        ) * numpy.cos(azimuth - aspect)
+        data = (shaded + numpy.float32(1.0)) * numpy.float32(127.5)
         data[data < 0] = 0  # set hillshade values to min of 0.
 
         bounds = img.bounds
@@ -86,12 +99,14 @@ class Slope(BaseAlgorithm):
     def __call__(self, img: ImageData) -> ImageData:
         """Calculate degrees slope from DEM dataset."""
         # Get the pixel size from the transform
-        pixel_size_x = abs(img.transform[0])
-        pixel_size_y = abs(img.transform[4])
+        pixel_size_x = numpy.float32(abs(img.transform[0]))
+        pixel_size_y = numpy.float32(abs(img.transform[4]))
 
-        x, y = numpy.gradient(img.array[0])
-        x *= self.z_exaggeration
-        y *= self.z_exaggeration
+        dem = _dem_band_for_math(img)
+        x, y = numpy.gradient(dem)
+        if self.z_exaggeration != 1.0:
+            x *= self.z_exaggeration
+            y *= self.z_exaggeration
         dx = x / pixel_size_x
         dy = y / pixel_size_y
 

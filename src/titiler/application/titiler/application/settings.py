@@ -35,6 +35,9 @@ class ApiSettings(BaseSettings):
 
     telemetry_enabled: bool = False
 
+    sentry_dsn: str | None = None
+    sentry_traces_sample_rate: float = 0.0
+
     # an API key required to access any endpoint, passed via the ?access_token= query parameter
     global_access_token: str | None = None
 
