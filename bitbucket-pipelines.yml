@@ -1,0 +1,47 @@
+image: atlassian/default-image:4
+
+definitions:
+  steps:
+    - step: &build
+        name: Build TiTiler Image
+        image: docker:27.3.1-dind
+        script:
+          - export TAG="app"
+          - IMAGE_NAME=strayos-titiler
+          - export PATH=/usr/bin:$PATH
+          - export DOCKER_BUILDKIT=1
+          # Login to Docker Hub
+          - echo "${DOCKER_HUB_TOKEN}" | docker login -u "${DOCKER_HUB_USER}" --password-stdin || true
+          # Build & push
+          - docker build -f dockerfiles/Dockerfile . --pull --build-arg BUILDKIT_INLINE_CACHE=1 --cache-from "${DOCKER_HUB_USER}/${IMAGE_NAME}:${TAG}" --tag "${DOCKER_HUB_USER}/${IMAGE_NAME}:${TAG}"
+          - docker push "${DOCKER_HUB_USER}/${IMAGE_NAME}:${TAG}" || true
+
+    - step: &deploy
+        name: Titiler Server Deployment
+        deployment: production
+        script:
+          - apt-get update && apt-get install -y rsync
+          - rsync -avz --delete --exclude=.git --exclude=.venv --exclude=venv --exclude=.pytest_cache --exclude=__pycache__ --exclude='*.pyc' -e "ssh -o StrictHostKeyChecking=no" ./ $TITILER_SSH_USER@$TITILER_SERVER:~/titiler/
+          - pipe: atlassian/ssh-run:0.4.1
+            variables:
+              SSH_USER: $TITILER_SSH_USER
+              SERVER: $TITILER_SERVER
+              COMMAND: >
+                cd titiler &&
+                docker compose -f docker-compose-strayos.yml pull &&
+                for i in 1 2 3 4 5 6; do
+                docker compose -f docker-compose-strayos.yml up -d --wait titiler-$i && sleep 3;
+                done &&
+                docker compose -f docker-compose-strayos.yml exec nginx nginx -s reload
+pipelines:
+  branches:
+    main:
+      - step:
+        <<: *build
+      - step: 
+        <<: *deploy
+        deployment: production
+    '**':
+      - step:
+        <<: *build
+
