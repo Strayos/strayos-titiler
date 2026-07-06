@@ -1,0 +1,98 @@
+x-titiler-common: &titiler-common
+  build:
+    context: .
+    dockerfile: dockerfiles/Dockerfile
+  expose:
+    - "8000"
+  command: ["uvicorn", "titiler.application.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--forwarded-allow-ips=*"]
+  environment:
+    - CPL_TMPDIR=/tmp
+    - GDAL_CACHEMAX=4096
+    - GDAL_INGESTED_BYTES_AT_OPEN=32768
+    - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
+    - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
+    - GDAL_HTTP_MULTIPLEX=YES
+    - GDAL_HTTP_VERSION=2
+    - PYTHONWARNINGS=ignore
+    - VSI_CACHE=FALSE
+    - TITILER_API_SENTRY_DSN=https://40fcb66451659a7b535b08d1306a1ee7@sentry.strayos.com/17
+    - TITILER_API_SENTRY_TRACES_SAMPLE_RATE=0.1
+  volumes:
+    - ./:/data
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 10s
+
+services:
+  titiler-1:
+    <<: *titiler-common
+    container_name: titiler-worker-1
+
+  titiler-2:
+    <<: *titiler-common
+    container_name: titiler-worker-2
+
+  titiler-3:
+    <<: *titiler-common
+    container_name: titiler-worker-3
+
+  titiler-4:
+    <<: *titiler-common
+    container_name: titiler-worker-4
+
+  titiler-5:
+    <<: *titiler-common
+    container_name: titiler-worker-5
+
+  titiler-6:
+    <<: *titiler-common
+    container_name: titiler-worker-6
+
+  nginx:
+    container_name: nginx
+    image: nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./dockerfiles/nginx-strayos.conf:/etc/nginx/nginx.conf:ro
+      - /etc/ssl/strayos:/etc/nginx/ssl:ro
+    depends_on:
+      - titiler-1
+      - titiler-2
+      - titiler-3
+      - titiler-4
+      - titiler-5
+      - titiler-6
+    restart: unless-stopped
+
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./dockerfiles/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    restart: unless-stopped
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./dockerfiles/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./dockerfiles/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=SimpleYetComplex
+    restart: unless-stopped

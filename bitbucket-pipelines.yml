@@ -1,47 +1,137 @@
 image: atlassian/default-image:4
 
+options:
+  docker: true
+
+clone:
+  depth: 1
+
 definitions:
   steps:
-    - step: &build
-        name: Build TiTiler Image
+    - step: &publish
+        name: Build and Push TiTiler Image
         image: docker:27.3.1-dind
         script:
-          - export TAG="app"
           - IMAGE_NAME=strayos-titiler
+          - TAG="app"
+          - IMAGE_REPO="${DOCKER_HUB_USER}/${IMAGE_NAME}"
           - export PATH=/usr/bin:$PATH
           - export DOCKER_BUILDKIT=1
-          # Login to Docker Hub
-          - echo "${DOCKER_HUB_TOKEN}" | docker login -u "${DOCKER_HUB_USER}" --password-stdin || true
-          # Build & push
-          - docker build -f dockerfiles/Dockerfile . --pull --build-arg BUILDKIT_INLINE_CACHE=1 --cache-from "${DOCKER_HUB_USER}/${IMAGE_NAME}:${TAG}" --tag "${DOCKER_HUB_USER}/${IMAGE_NAME}:${TAG}"
-          - docker push "${DOCKER_HUB_USER}/${IMAGE_NAME}:${TAG}" || true
+          - 'if [ -z "$DOCKER_HUB_TOKEN" ]; then echo "ERROR: DOCKER_HUB_TOKEN is empty"; exit 1; fi'
+          - |
+            case "$-" in
+              *x*) XTRACE_WAS_ON=1 ;;
+              *) XTRACE_WAS_ON=0 ;;
+            esac
+            set +x
+            printf '%s\n' "${DOCKER_HUB_TOKEN}" | docker login -u "${DOCKER_HUB_USER}" --password-stdin
+            if [ "$XTRACE_WAS_ON" = "1" ]; then set -x; fi
+          - docker build -f dockerfiles/Dockerfile . --pull --build-arg BUILDKIT_INLINE_CACHE=1 --cache-from "${IMAGE_REPO}:${TAG}" --tag "${IMAGE_REPO}:${TAG}"
+          - docker push "${IMAGE_REPO}:${TAG}"
 
     - step: &deploy
-        name: Titiler Server Deployment
-        deployment: production
+        name: Deploy Changes to VM
+        deployment: Production
+        concurrency-group: titiler-app-deploy
         script:
-          - apt-get update && apt-get install -y rsync
-          - rsync -avz --delete --exclude=.git --exclude=.venv --exclude=venv --exclude=.pytest_cache --exclude=__pycache__ --exclude='*.pyc' -e "ssh -o StrictHostKeyChecking=no" ./ $TITILER_SSH_USER@$TITILER_SERVER:~/titiler/
-          - pipe: atlassian/ssh-run:0.4.1
-            variables:
-              SSH_USER: $TITILER_SSH_USER
-              SERVER: $TITILER_SERVER
-              COMMAND: >
-                cd titiler &&
-                docker compose -f docker-compose-strayos.yml pull &&
-                for i in 1 2 3 4 5 6; do
-                docker compose -f docker-compose-strayos.yml up -d --wait titiler-$i && sleep 3;
-                done &&
-                docker compose -f docker-compose-strayos.yml exec nginx nginx -s reload
+          # Install Azure CLI
+          - apt-get update && apt-get install -y curl rsync
+          - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+          # Login to Azure
+          - |
+            case "$-" in
+              *x*) XTRACE_WAS_ON=1 ;;
+              *) XTRACE_WAS_ON=0 ;;
+            esac
+            set +x
+            az login --service-principal -u "$DEPLOY_AZURE_ID" -p "$DEPLOY_AZURE_PASS" --tenant "$AZURE_TENANT_ID" --output none
+            if [ "$XTRACE_WAS_ON" = "1" ]; then set -x; fi
+          - az account set --subscription $AZURE_SUBSCRIPTION_ID
+          - |
+            set -e
+
+            IMAGE_NAME="strayos-titiler"
+            TAG="app"
+            IMAGE_REPO="${DOCKER_HUB_USER}/${IMAGE_NAME}"
+            TITILER_IMAGE="${IMAGE_REPO}:${TAG}"
+
+            if [ -z "$DOCKER_HUB_USER" ]; then
+              echo "ERROR: DOCKER_HUB_USER is empty"
+              exit 1
+            fi
+            if [ -z "$SSH_KEY_B64" ]; then
+              echo "ERROR: SSH_KEY_B64 is empty"
+              exit 1
+            fi
+
+            PUBLIC_IP=$(curl -s4 icanhazip.com)
+            echo "Runner public IP: ${PUBLIC_IP:-(empty)}"
+            if [ -z "$PUBLIC_IP" ]; then
+              echo "ERROR: Failed to get runner public IP"
+              exit 1
+            fi
+
+            RULE_PRIORITY="250"
+            RESOURCE_GROUP="TiTiler"
+            NSG_NAME="app-titiler-nsg"
+            DESTINATION_IP_PRIVATE="10.9.0.4"
+            DESTINATION_PORT="22"
+            RULE_NAME="titiler_$(echo "${BITBUCKET_BRANCH}" | tr '/\\' '_')_deploy"
+            NSG_RULE_CREATED=0
+
+            cleanup_nsg_rule() {
+              if [ "$NSG_RULE_CREATED" = "1" ]; then
+                echo "Deleting NSG rule ${RULE_NAME}..."
+                az network nsg rule delete --resource-group "$RESOURCE_GROUP" --nsg-name "$NSG_NAME" --name "$RULE_NAME" --no-wait || true
+              fi
+            }
+            trap cleanup_nsg_rule EXIT
+
+            while az network nsg rule list --resource-group "$RESOURCE_GROUP" --nsg-name "$NSG_NAME" --query "[?priority==\`$RULE_PRIORITY\`]" -o tsv | grep -q .; do
+              RULE_PRIORITY=$((RULE_PRIORITY + 1))
+            done
+
+            az network nsg rule create --resource-group "$RESOURCE_GROUP" --nsg-name "$NSG_NAME" --name "$RULE_NAME" --priority "$RULE_PRIORITY" --access Allow --direction Inbound --protocol Tcp --source-address-prefixes "$PUBLIC_IP" --destination-port-ranges "$DESTINATION_PORT" --destination-address-prefixes "$DESTINATION_IP_PRIVATE" --description "SSH deploy"
+            NSG_RULE_CREATED=1
+
+            printf '%s' "$SSH_KEY_B64" | base64 -d > /tmp/ssh_key
+            chmod 600 /tmp/ssh_key
+            ssh-keygen -y -f /tmp/ssh_key > /dev/null
+
+            SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=30 -o BatchMode=yes -i /tmp/ssh_key"
+            SSH_READY=0
+            i=1
+            while [ $i -le 10 ]; do
+              echo "Attempt $i: Checking SSH connectivity to ${TITILER_SERVER}..."
+              if ssh $SSH_OPTS ${TITILER_SSH_USER}@${TITILER_SERVER} "exit" > /dev/null 2>&1; then
+                echo "SSH is ready!"
+                SSH_READY=1
+                break
+              fi
+              [ $i -lt 10 ] && sleep 15
+              i=$((i + 1))
+            done
+            if [ "$SSH_READY" -ne 1 ]; then
+              echo "ERROR: SSH never became ready"
+              exit 1
+            fi
+
+            rsync -avz --delete --exclude=.git --exclude=.venv --exclude=venv --exclude=.pytest_cache --exclude=__pycache__ --exclude='*.pyc' -e "ssh $SSH_OPTS" ./ "${TITILER_SSH_USER}@${TITILER_SERVER}:~/strayos-titiler/"
+
+            ssh $SSH_OPTS "${TITILER_SSH_USER}@${TITILER_SERVER}" "
+              set -e
+              cd strayos-titiler
+              export TITILER_IMAGE='${TITILER_IMAGE}'
+              docker compose -f docker-compose-strayos-deploy.yml pull
+              for i in 1 2 3 4 5 6; do
+                docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate titiler-\$i
+                sleep 3
+              done
+              docker compose -f docker-compose-strayos-deploy.yml exec nginx nginx -s reload
+            "
 pipelines:
   branches:
     main:
-      - step:
-        <<: *build
-      - step: 
-        <<: *deploy
-        deployment: production
-    '**':
-      - step:
-        <<: *build
+      - step: *publish
+      - step: *deploy
 

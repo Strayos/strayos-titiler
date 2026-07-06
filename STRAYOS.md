@@ -1,38 +1,109 @@
 # Strayos TiTiler Notes
 
-This file is the single place for Strayos-specific TiTiler deployment notes.
+This file is supposed to serve as a working documentation for the strayos specific implementation of titiler
+
+There are two upstream origins to this project.
+* A Main upstream which is github used to sync changes from the original repo to our fork
+* a bitbucket upstream for us to push our changes for deployment
 
 ## Tile sizes
 
-- assume that the raster in question has a default block size of 512
+We assume that the raster's for which we fetch tiles for has a default block size of 512
 
-## Building
+## Building Wheel Files
 
-- Make any changes necessary and build a wheel file to be used for integration into other projects. The `build_whl_file.sh` script can be used to build the wheel file.
-- Start the TiTiler server using `docker-compose-strayos.yml` when you want to run code from this project instead of an installed package.
+Incase of doing a function app deployment or using in another app/service follow these steps
 
-## VM Info
+* Make any changes necessary changes
+* build a wheel file to be using `build_whl_file.sh`
+* check run tests.
 
-The Strayos TiTiler deployment is tuned for the Azure `Standard_D8as_v5` VM size:
+This app is not primarily used via a whl file installation
+
+## Local Development
+
+* Start the Strayos TiTiler stack with `docker-compose-strayos-dev.yml` when you want to run code from this project instead of an installed package.
+* Production deploys use `docker-compose-strayos-deploy.yml`, with the image supplied through `TITILER_IMAGE` and defaulting to `strayos1/strayos-titiler:app`.
+
+## CI/CD Pipeline
+
+### Branch behavior
+
+- `main`: builds and pushes the Docker image, then exposes a manual production deploy step.
+- Other branches: builds the Docker image only.
+- The clone depth is `1`, so pipeline steps operate on a shallow clone of the current branch.
+
+### Deploy step
+
+- Uses `atlassian/default-image:4`.
+- Uses `concurrency-group: titiler-production-deploy` so production deploys do not overlap.
+- Logs in to Azure with the service-principal variables `DEPLOY_AZURE_ID`, `DEPLOY_AZURE_PASS`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`.
+- Gets the Bitbucket runner public IP with `curl -s4 icanhazip.com`. The `-4` flag is required because the NSG rule targets an IPv4 destination.
+- Temporarily opens SSH from the runner IP, syncs the repo to the VM with `rsync`, starts the six TiTiler services one at a time, then reloads Nginx.
+
+### Required pipeline variables:
+
+| Variable | Scope | Purpose |
+| --- | --- | --- |
+| `DOCKER_HUB_USER` | Workspace | Docker Hub username/namespace used for the image repository. |
+| `DOCKER_HUB_TOKEN` | Workspace | Docker Hub token used by `docker login`. |
+| `DEPLOY_AZURE_ID` | Workspace | Azure service-principal client/application ID. |
+| `DEPLOY_AZURE_PASS` | Workspace | Azure service-principal secret. |
+| `AZURE_TENANT_ID` | Workspace | Azure tenant ID for service-principal login. |
+| `AZURE_SUBSCRIPTION_ID` | Workspace | Azure subscription selected before NSG changes. |
+| `SSH_KEY_B64` | Repository | Base64-encoded private SSH key used for VM access. Decoded on the fly for usage |
+| `TITILER_SERVER` | Repository | Public host or IP for the production VM. |
+| `TITILER_SSH_USER` | Repository | SSH user for the production VM. |
+
+## Deployment Flow
+
+The production deployment runs against the Azure VM and deploys the exact image built from the Bitbucket commit:
 
 ```text
-Azure size: Standard_D8as_v5
-CPU:        8 vCPUs
-RAM:        32 GiB
+Bitbucket main branch
+  -> build ${DOCKER_HUB_USER}/strayos-titiler:${BITBUCKET_COMMIT}
+  -> push ${DOCKER_HUB_USER}/strayos-titiler:${BITBUCKET_COMMIT}
+  -> push ${DOCKER_HUB_USER}/strayos-titiler:app
+  -> create temporary NSG SSH allow rule
+  -> rsync repository to ~/titiler on the VM
+  -> export TITILER_IMAGE=${DOCKER_HUB_USER}/strayos-titiler:${BITBUCKET_COMMIT}
+  -> docker compose -f docker-compose-strayos-deploy.yml pull
+  -> for each backend from titiler-1 to titiler-6: docker compose -f docker-compose-strayos-deploy.yml up -d --wait <service>
+  -> docker compose -f docker-compose-strayos-deploy.yml exec nginx nginx -s reload
+  -> delete temporary NSG rule
 ```
 
-The compose file runs six TiTiler backend services, each with one Uvicorn worker. This gives the VM one TiTiler process per CPU core while still allowing Nginx to route requests by raster URL.
+The deploy step starts workers sequentially with a short delay between services. This avoids replacing all six TiTiler backends at once.
 
-The current cache settings are chosen for this VM size:
+## Azure Infrastructure: Production
 
-```text
-GDAL_CACHEMAX=4096        # 4096 MiB per backend process
-VSI_CACHE=FALSE           # disabled (see "VSI Cache Disabled" section below)
-```
+| Resource | Value |
+| --- | --- |
+| Subscription | `1c2680bc-ad06-4e7a-a43f-f69099c8c2fe` (`Microsoft Azure Sponsorship`) |
+| Resource group | `TiTiler` |
+| VM name | `app-titiler` |
+| VM size | `Standard_D8as_v5` |
+| VM CPU | 8 vCPUs |
+| VM RAM | 32 GiB |
+| VM public IP | `20.81.154.120` |
+| VM private IP | `10.9.0.4` |
+| VNet/subnet | `app-titiler-vnet` / `default` |
+| NIC | `app-titiler266_z1` |
+| NSG | `app-titiler-nsg` at NIC level (Azure NAT happens before NSG evaluation, so rules target the VM private IP) |
+| NSG rule name | `titiler_${BITBUCKET_BRANCH}_deploy` (`/` and `\` replaced with `_`) |
+| NSG destination port | `22` (SSH) |
+| NSG rule priority | `250` (auto-incremented by the deploy script until a free slot is found) |
+| SSH user | `azureuser` |
+| SSH private key (manual) | `~/.ssh/app-titiler_key.pem` |
+| SSH private key (pipeline) | `SSH_KEY_B64` (base64-encoded, decoded on the fly) |
+| Pipeline SSH vars | `TITILER_SERVER` (public IP), `TITILER_SSH_USER`, `SSH_KEY_B64` |
+| Service principal | `9e4d68a5-0c04-4094-aaea-1ac75ee9f35a` |
 
-## Runtime Topology
+Existing SSH allow rules include `SSH_whitelist`. The deploy script deletes the temporary rule it creates with `az network nsg rule delete --no-wait` during cleanup.
 
-`docker-compose-strayos.yml` runs six TiTiler backend services:
+### Runtime Topology
+
+`docker-compose-strayos-deploy.yml` runs six TiTiler backend services:
 
 ```text
 nginx
@@ -52,11 +123,12 @@ Nginx routes requests using a consistent hash:
 hash $titiler_hash_key consistent;
 ```
 
-For normal COG tile requests, `$titiler_hash_key` is the `url` query parameter. Requests for the same raster URL should usually go to the same TiTiler backend, improving cache locality. Requests without a `url` query parameter fall back to hashing the full request URI.
+- For normal COG tile requests, `$titiler_hash_key` is the `url` query parameter. Requests for the same raster URL should usually go to the same TiTiler backend, improving cache locality.
+- Requests without a `url` query parameter fall back to hashing the full request URI.
+- This is not hard pinning. If the selected upstream has an error or connection reset, Nginx may route a request to another backend.
+- This was tested before and 86% to 99.7% of requests for each raster was found to be sticky
 
-This is not hard pinning. If the selected upstream has an error or connection reset, Nginx may route a request to another backend. In the June 12, 2026 test logs, raster routing was mostly sticky, with dominant workers receiving about 86% to 99.7% of requests for each raster.
-
-## Environment Variables
+### Environment Variables
 
 Most configured variables are GDAL settings consumed through Rasterio/GDAL while TiTiler reads Cloud-Optimized GeoTIFFs and other remote raster data. They are not `TITILER_API_*` settings for enabling or disabling TiTiler application features.
 
@@ -72,56 +144,44 @@ Most configured variables are GDAL settings consumed through Rasterio/GDAL while
 | `PYTHONWARNINGS` | `ignore` | Suppresses Python warnings. This keeps logs quiet, but can hide useful dependency or deprecation warnings. |
 | `VSI_CACHE` | `FALSE` | Disables GDAL's VSI cache. Disabled because in this architecture each request opens and closes the dataset once, so no byte range is ever read twice within a file handle's lifetime. |
 
-## VSI Cache Disabled
+## Caching
 
-`VSI_CACHE=FALSE` disables GDAL's in-memory byte-range cache for `/vsicurl/` and `/vsis3/`. This was previously `TRUE` with `VSI_CACHE_SIZE=268435456` (256 MiB), but was changed because the VSI cache provided no benefit in this architecture.
+### VSI Cache Disabled
 
-### Why the VSI cache was ineffective
+`VSI_CACHE=FALSE` disables GDAL's in-memory byte-range cache for `/vsicurl/` and `/vsis3/`. It was previously `TRUE` with `VSI_CACHE_SIZE=268435456` (256 MiB), but provided no benefit in this architecture:
 
-The VSI cache caches raw downloaded byte ranges per open GDAL file handle. It only helps when the same byte range is requested more than once while the handle is open. In this TiTiler deployment:
+- **Within a single request**: Each tile request opens the COG, reads metadata once (`rasterio.open()`), then reads tile data once (`dataset.read()`). No byte range is read twice.
+- **Across requests**: Each request opens a fresh dataset and closes it when done, destroying the file handle and its VSI cache. The next request starts with an empty cache.
 
-1. **Within a single request**: Each tile request opens the COG, reads metadata once during `rasterio.open()`, then reads the needed tile data blocks once during `dataset.read()`. No byte range is ever read twice.
+The VSI cache was allocated but never served a hit — dead memory overhead. Removing it frees up to 256 MiB per open handle.
 
-2. **Across requests**: Each HTTP request opens a fresh dataset (`with self.reader(...) as src_dst:`) and closes it when done. Closing the dataset destroys the file handle and its VSI cache. The next request gets a new empty cache.
+### How `GDAL_CACHEMAX` differs
 
-So the VSI cache was allocated but never served a single hit — it was dead memory overhead. Removing it frees up to 256 MiB per open handle that would otherwise sit unused.
-
-### How `GDAL_CACHEMAX` is different
-
-`GDAL_CACHEMAX` (set to 4096 MiB) caches **decoded raster blocks** at the process level, not per-file-handle. This cache persists across requests within the same worker:
+`GDAL_CACHEMAX=4096` caches **decoded raster blocks** at the process level, not per-file-handle. This persists across requests within the same worker:
 
 ```text
 Request 1: rasterio.open() -> read metadata -> read tile blocks A, B -> close
 Request 2: rasterio.open() -> read metadata -> read tile blocks B, C -> close
 ```
 
-Without VSI cache: raw metadata bytes and tile blocks are re-fetched from Azure each time. This is fine because GDAL only fetches the specific byte ranges it needs.
+Without VSI cache: raw bytes are re-fetched from Azure each time (fine — GDAL only fetches the ranges it needs).  
+With GDAL block cache: decoded blocks A and B from Request 1 may still be cached when Request 2 needs block B again, avoiding re-decode.
 
-With GDAL block cache: decoded blocks A and B (from Request 1) may still be in the block cache when Request 2 needs block B again, avoiding re-decode.
+The GDAL block cache is the cache that matters. The VSI byte-range cache was a redundant layer.
 
-The GDAL block cache is the cache that matters for this architecture. The VSI byte-range cache was a redundant layer.
+### Memory Budget
 
-### Memory impact
-
-With VSI_CACHE disabled:
-
-```text
-6 backend processes * 4096 MiB = about 24 GiB GDAL block-cache ceiling
+```
+6 backends * 4096 MiB GDAL_CACHEMAX = ~24 GiB ceiling (not startup allocation)
+No VSI overhead
+32 GiB total RAM shared by GDAL cache, Python, Nginx, OS, request buffers, Azure Blob connections
 ```
 
-No VSI cache memory overhead. All 32 GiB of VM RAM is available for the GDAL block cache, Python, Nginx, the OS, request buffers, and Azure Blob Storage connections.
+## Request Routing
 
-## Case-Based Behavior
+### Cache Locality
 
-### 6 Workers on a 32 GB VM
-
-The current layout is appropriate for an 8 CPU, 32 GB VM: six backend services, each with one Uvicorn worker. This keeps one process per CPU core (with two cores reserved for the OS, Nginx, and overhead) while allowing Nginx to route by raster URL. Running one service with `uvicorn --workers 6` would hide those workers behind one socket, so Nginx could not route requests by raster URL.
-
-### Same Raster Requested Repeatedly
-
-Requests for the same `url` should usually go to the same backend. That improves locality for `GDAL_CACHEMAX`.
-
-Example:
+Consistent hashing routes the same raster URL to the same backend:
 
 ```text
 ortho_cog.tif tile 1 -> titiler-worker-4
@@ -129,44 +189,28 @@ ortho_cog.tif tile 2 -> titiler-worker-4
 ortho_cog.tif tile 3 -> titiler-worker-4
 ```
 
-This is better than spreading the same raster across all workers, because each worker has its own GDAL block cache.
+This keeps each raster's decoded blocks in one backend's `GDAL_CACHEMAX`, avoiding duplication across workers.
 
-### 10 Different Rasters
+### Hot Raster Tradeoff
 
-Memory ceiling with `GDAL_CACHEMAX=4096`:
+If one raster receives most traffic, its backend can become CPU-bound. Cache locality improves, but CPU spreading is reduced. If this becomes a bottleneck, the hash key could include part of the tile coordinate — at the cost of cache locality.
 
-```text
-6 backend processes * 4096 MiB = about 24 GiB GDAL block-cache ceiling
-```
+### Upstream Spillover
 
-Actual memory can be much lower because this is a ceiling, not a startup allocation.
+Consistent hashing is best-effort, not hard pinning. If the selected backend returns a connection reset, timeout, or other upstream error, Nginx routes to another backend. This causes some cache duplication but keeps the service available.
 
-### 20 Different Rasters
+### Worker Count Rationale
 
-Same ceiling: about 24 GiB max for the GDAL block cache. No VSI cache overhead.
-
-### One Hot Raster
-
-Consistent hashing can make one backend hot if one raster receives most traffic:
-
-```text
-very popular raster -> one TiTiler backend gets most of that raster's traffic
-```
-
-This improves cache locality but may reduce CPU spreading for that one raster. If this becomes a bottleneck, the hash key could include part of the tile coordinate, but that trades away cache locality.
-
-### Upstream Errors and Spillover
-
-Nginx consistent hashing is not a strict guarantee. If the selected backend has a connection reset, timeout, or other upstream failure, Nginx can send a request to another backend. This causes some cache duplication, but keeps the service more available.
+Six single-worker backends (not `uvicorn --workers 6`) reserve 2 of the 8 vCPUs for the OS, Nginx, and overhead, while keeping each backend addressable by Nginx for per-URL routing.
 
 ## Checking Routing Stickiness
 
-To collect logs on the VM:
+Collect logs on the VM:
 
 ```bash
 mkdir -p titiler-log-dump
 
-docker compose -f docker-compose-strayos.yml ps > titiler-log-dump/compose-ps.txt 2>&1
+docker compose -f docker-compose-strayos-deploy.yml ps > titiler-log-dump/compose-ps.txt 2>&1
 
 docker inspect -f '{{.Name}} {{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
   nginx titiler-worker-1 titiler-worker-2 titiler-worker-3 titiler-worker-4 titiler-worker-5 titiler-worker-6 \
@@ -183,9 +227,7 @@ docker logs --timestamps titiler-worker-6 > titiler-log-dump/titiler-worker-6.lo
 tar -czf titiler-log-dump.tar.gz titiler-log-dump
 ```
 
-If URLs contain signed tokens, redact secrets before sharing logs.
-
-For stronger proof, add an Nginx access log format that includes `$upstream_addr`, `$arg_url`, and `$titiler_hash_key`.
+Redact signed tokens from URLs before sharing logs. For stronger proof, add an Nginx log format that includes `$upstream_addr`, `$arg_url`, and `$titiler_hash_key`.
 
 ## Sources
 
