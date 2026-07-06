@@ -1,7 +1,5 @@
 x-titiler-common: &titiler-common
-  build:
-    context: .
-    dockerfile: dockerfiles/Dockerfile
+  image: "${TITILER_IMAGE:-strayos1/strayos-titiler:app}"
   expose:
     - "8000"
   command: ["uvicorn", "titiler.application.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--forwarded-allow-ips=*"]
@@ -68,4 +66,31 @@ services:
       - titiler-4
       - titiler-5
       - titiler-6
+    restart: unless-stopped
+
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./dockerfiles/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    restart: unless-stopped
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./dockerfiles/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./dockerfiles/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=SimpleYetComplex
     restart: unless-stopped

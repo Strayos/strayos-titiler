@@ -20,6 +20,8 @@ from starlette_cramjam.middleware import CompressionMiddleware
 
 from titiler.application import __version__ as titiler_version
 from titiler.application.settings import ApiSettings
+
+from starlette_exporter import PrometheusMiddleware, handle_metrics
 from titiler.core.errors import DEFAULT_STATUS_CODES, add_exception_handlers
 from titiler.core.factory import (
     AlgorithmFactory,
@@ -229,6 +231,10 @@ MOSAIC_STATUS_CODES.update(
     }
 )
 add_exception_handlers(app, MOSAIC_STATUS_CODES)
+
+# Prometheus metrics middleware (must be early in middleware stack)
+app.add_middleware(PrometheusMiddleware, skip_paths=["/healthz", "/metrics"])
+app.add_route("/metrics", handle_metrics)
 
 # Set all CORS enabled origins
 if api_settings.cors_origins:

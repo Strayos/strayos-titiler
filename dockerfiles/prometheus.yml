@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "titiler"
+    static_configs:
+      - targets:
+          - titiler-1:8000
+          - titiler-2:8000
+          - titiler-3:8000
+          - titiler-4:8000
+          - titiler-5:8000
+          - titiler-6:8000
+        labels:
+          app: titiler

@@ -4729,6 +4729,19 @@ wheels = [
 ]
 
 [[package]]
+name = "sentry-sdk"
+version = "2.64.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "certifi" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/60/31/b7341f156a5f6f36f0b4845d6f1c28a2ae4799171dba7007f3a1e9b234b4/sentry_sdk-2.64.0.tar.gz", hash = "sha256:68be2c29e14ae310f8a39e1a79916b6d85c6cb41dcce789d14ff05fe293e4c55", size = 921020, upload-time = "2026-06-30T08:13:47.682Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/36/a8/3fb9a4319efa3b26f5be0e90e6d8918df43fa7c7e977d26390f589501d82/sentry_sdk-2.64.0-py3-none-any.whl", hash = "sha256:715ea91ca860a819e8d8a50a7bde3a80d0df3b4ed7b6660a20fb9a2d084188f1", size = 498901, upload-time = "2026-06-30T08:13:45.566Z" },
+]
+
+[[package]]
 name = "setuptools"
 version = "80.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4903,6 +4916,19 @@ wheels = [
 ]
 
 [[package]]
+name = "starlette-exporter"
+version = "0.18.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "prometheus-client" },
+    { name = "starlette" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/16/1d/a4896e67c9fa95abfced08690a88f3dcb08ce2204d7e778a4c5ea88368fd/starlette_exporter-0.18.0.tar.gz", hash = "sha256:27e41ae4a3dcd74e6be1ebdab0a1bbc7f09dfc947c4455211b2e75ab9c56618a", size = 20294, upload-time = "2024-01-17T06:20:28.902Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/40/3a/cebf7a57b9f4830f5b0e23f1d20910513afdd6152dabd124f195f67f2e47/starlette_exporter-0.18.0-py3-none-any.whl", hash = "sha256:ee976fd111c396c754efbc989772ec39dcb91d721cddc42c70b204373a60531f", size = 14783, upload-time = "2024-01-17T06:20:26.516Z" },
+]
+
+[[package]]
 name = "supermorecado"
 version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -5053,7 +5079,9 @@ name = "titiler-application"
 source = { editable = "src/titiler/application" }
 dependencies = [
     { name = "pydantic-settings" },
+    { name = "sentry-sdk" },
     { name = "starlette-cramjam" },
+    { name = "starlette-exporter" },
     { name = "titiler-core", extra = ["telemetry"] },
     { name = "titiler-extensions", extra = ["cogeo", "stac"] },
     { name = "titiler-mosaic", extra = ["mosaicjson"] },
@@ -5077,7 +5105,9 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "pydantic-settings", specifier = "~=2.0" },
+    { name = "sentry-sdk", specifier = ">=2.0,<3.0" },
     { name = "starlette-cramjam", specifier = ">=0.4,<0.6" },
+    { name = "starlette-exporter", specifier = ">=0.17,<0.19" },
     { name = "titiler-core", extras = ["telemetry"], editable = "src/titiler/core" },
     { name = "titiler-extensions", extras = ["cogeo", "stac"], editable = "src/titiler/extensions" },
     { name = "titiler-mosaic", extras = ["mosaicjson"], editable = "src/titiler/mosaic" },
