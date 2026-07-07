@@ -64,6 +64,7 @@ services:
     volumes:
       - ./dockerfiles/nginx-strayos.conf:/etc/nginx/nginx.conf:ro
       - /etc/ssl/strayos:/etc/nginx/ssl:ro
+      - nginx-cache:/var/cache/nginx
     depends_on:
       - titiler-1
       - titiler-2
@@ -178,3 +179,4 @@ services:
 volumes:
   prometheus-data:
   grafana-data:
+  nginx-cache:
