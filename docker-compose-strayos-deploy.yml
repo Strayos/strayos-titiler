@@ -71,7 +71,14 @@ services:
       - titiler-4
       - titiler-5
       - titiler-6
+      - grafana
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     logging:
       driver: local
       options:
@@ -81,10 +88,11 @@ services:
   prometheus:
     container_name: prometheus
     image: prom/prometheus:latest
-    ports:
-      - "9090:9090"
+    expose:
+      - "9090"
     volumes:
       - ./dockerfiles/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -100,19 +108,34 @@ services:
   grafana:
     container_name: grafana
     image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     volumes:
-      - ./dockerfiles/grafana/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./dockerfiles/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+      - ./dockerfiles/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./dockerfiles/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./dockerfiles/grafana/dashboards:/etc/grafana/dashboards:ro
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=SimpleYetComplex
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-SimpleYetComplex}
+      - GF_SECURITY_COOKIE_SECURE=true
+      - GF_SECURITY_COOKIE_SAMESITE=lax
+      - GF_SERVER_DOMAIN=titiler.strayos.com
+      - GF_SERVER_PROTOCOL=http
       - GF_SERVER_ROOT_URL=https://titiler.strayos.com/grafana/
       - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANONYMOUS_ENABLED:-false}
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
     restart: unless-stopped
     logging:
       driver: local
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  prometheus-data:
+  grafana-data:
