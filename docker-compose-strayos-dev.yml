@@ -68,6 +68,7 @@ services:
       - titiler-4
       - titiler-5
       - titiler-6
+      - grafana
     restart: unless-stopped
 
   prometheus:
@@ -90,11 +91,14 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ./dockerfiles/grafana/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./dockerfiles/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./dockerfiles/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./dockerfiles/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./dockerfiles/grafana/dashboards:/etc/grafana/dashboards:ro
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=SimpleYetComplex
       - GF_SERVER_ROOT_URL=https://titiler.strayos.com/grafana/
       - GF_SERVER_SERVE_FROM_SUB_PATH=true
+    depends_on:
+      - prometheus
     restart: unless-stopped

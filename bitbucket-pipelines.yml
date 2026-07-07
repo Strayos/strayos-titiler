@@ -116,17 +116,19 @@ definitions:
               exit 1
             fi
 
-            rsync -avz --delete --exclude=.git --exclude=.venv --exclude=venv --exclude=.pytest_cache --exclude=__pycache__ --exclude='*.pyc' -e "ssh $SSH_OPTS" ./ "${TITILER_SSH_USER}@${TITILER_SERVER}:~/strayos-titiler/"
+            rsync -avz --delete --exclude=.git --exclude=.env --exclude=.venv --exclude=venv --exclude=.pytest_cache --exclude=__pycache__ --exclude='*.pyc' -e "ssh $SSH_OPTS" ./ "${TITILER_SSH_USER}@${TITILER_SERVER}:~/strayos-titiler/"
 
             ssh $SSH_OPTS "${TITILER_SSH_USER}@${TITILER_SERVER}" "
               set -e
               cd strayos-titiler
               export TITILER_IMAGE='${TITILER_IMAGE}'
               docker compose -f docker-compose-strayos-deploy.yml pull
+              docker compose -f docker-compose-strayos-deploy.yml up -d --wait prometheus grafana
               for i in 1 2 3 4 5 6; do
                 docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate titiler-\$i
                 sleep 3
               done
+              docker compose -f docker-compose-strayos-deploy.yml up -d --wait nginx
               docker compose -f docker-compose-strayos-deploy.yml exec nginx nginx -s reload
             "
 pipelines:
@@ -134,4 +136,3 @@ pipelines:
     main:
       - step: *publish
       - step: *deploy
-
