@@ -14,3 +14,15 @@ scrape_configs:
           - titiler-6:8000
         labels:
           app: titiler
+  - job_name: "node-exporter"
+    static_configs:
+      - targets:
+          - node-exporter:9100
+        labels:
+          app: node-exporter
+  - job_name: "cadvisor"
+    static_configs:
+      - targets:
+          - cadvisor:8080
+        labels:
+          app: cadvisor

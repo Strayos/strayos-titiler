@@ -85,6 +85,35 @@ services:
       - "--web.console.templates=/usr/share/prometheus/consoles"
     restart: unless-stopped
 
+  node-exporter:
+    container_name: node-exporter
+    image: prom/node-exporter:latest
+    expose:
+      - "9100"
+    command:
+      - "--path.rootfs=/host"
+    volumes:
+      - /:/host:ro,rslave
+      - /proc:/host/proc:ro,rslave
+      - /sys:/host/sys:ro,rslave
+    pid: host
+    restart: unless-stopped
+
+  cadvisor:
+    container_name: cadvisor
+    image: gcr.io/cadvisor/cadvisor:latest
+    privileged: true
+    expose:
+      - "8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    devices:
+      - /dev/kmsg
+    restart: unless-stopped
+
   grafana:
     container_name: grafana
     image: grafana/grafana:latest
