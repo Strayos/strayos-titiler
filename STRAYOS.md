@@ -117,6 +117,21 @@ nginx
 
 Each TiTiler backend is a separate process with its own Python interpreter, Rasterio/GDAL state, and GDAL block cache. There is no shared memory cache across workers.
 
+Each backend and nginx has a healthcheck that curls `http://localhost:8000/healthz` every 30s with a 10s timeout, 3 retries, and a 10s start period.
+
+### Logging
+
+All services use Docker's `local` logging driver with file rotation:
+
+| Service | `max-size` | `max-file` | Max per container |
+| ------- | ---------- | ---------- | ---------------- |
+| titiler-1..6 | 50m | 3 | 150 MB |
+| nginx | 50m | 3 | 150 MB |
+| prometheus | 10m | 3 | 30 MB |
+| grafana | 10m | 3 | 30 MB |
+
+Total worst-case disk usage: ~1.1 GB across all services. Logs are stored at `/var/lib/docker/containers/<id>/local-logs/` in binary format (view with `docker logs`).
+
 Nginx routes requests using a consistent hash:
 
 ```nginx
@@ -202,6 +217,18 @@ Consistent hashing is best-effort, not hard pinning. If the selected backend ret
 ### Worker Count Rationale
 
 Six single-worker backends (not `uvicorn --workers 6`) reserve 2 of the 8 vCPUs for the OS, Nginx, and overhead, while keeping each backend addressable by Nginx for per-URL routing.
+
+### Monitoring: Prometheus & Grafana
+
+The stack includes Prometheus and Grafana for observability:
+
+| Service | Port |
+| ------- | ---- |
+| Prometheus | `9090` |
+| Grafana | `3000` |
+
+- **Prometheus** scrapes metrics from the TiTiler backends using `dockerfiles/prometheus.yml`.
+- **Grafana** is pre-provisioned with datasources and dashboards from `dockerfiles/grafana/` and served at `https://titiler.strayos.com/grafana/` (sub-path enabled).
 
 ## Checking Routing Stickiness
 

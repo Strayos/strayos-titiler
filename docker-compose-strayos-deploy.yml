@@ -24,6 +24,11 @@ x-titiler-common: &titiler-common
     timeout: 10s
     retries: 3
     start_period: 10s
+  logging:
+    driver: local
+    options:
+      max-size: "50m"
+      max-file: "3"
 
 services:
   titiler-1:
@@ -67,6 +72,11 @@ services:
       - titiler-5
       - titiler-6
     restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "50m"
+        max-file: "3"
 
   prometheus:
     container_name: prometheus
@@ -81,6 +91,11 @@ services:
       - "--web.console.libraries=/usr/share/prometheus/console_libraries"
       - "--web.console.templates=/usr/share/prometheus/consoles"
     restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   grafana:
     container_name: grafana
@@ -96,3 +111,8 @@ services:
       - GF_SERVER_ROOT_URL=https://titiler.strayos.com/grafana/
       - GF_SERVER_SERVE_FROM_SUB_PATH=true
     restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
