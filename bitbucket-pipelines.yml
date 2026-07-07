@@ -123,7 +123,7 @@ definitions:
               cd strayos-titiler
               export TITILER_IMAGE='${TITILER_IMAGE}'
               docker compose -f docker-compose-strayos-deploy.yml pull
-              docker compose -f docker-compose-strayos-deploy.yml up -d --wait prometheus grafana
+              docker compose -f docker-compose-strayos-deploy.yml up -d --wait prometheus node-exporter cadvisor grafana
               for i in 1 2 3 4 5 6; do
                 docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate titiler-\$i
                 sleep 3
