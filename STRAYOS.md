@@ -86,6 +86,7 @@ The deploy step starts Prometheus, node-exporter, cAdvisor, and Grafana, then st
 | VM size | `Standard_D8as_v5` |
 | VM CPU | 8 vCPUs |
 | VM RAM | 32 GiB |
+| VM OS disk | 61 GB |
 | VM public IP | `20.81.154.120` |
 | VM private IP | `10.9.0.4` |
 | VNet/subnet | `app-titiler-vnet` / `default` |

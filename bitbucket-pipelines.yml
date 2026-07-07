@@ -130,6 +130,7 @@ definitions:
               done
               docker compose -f docker-compose-strayos-deploy.yml up -d --wait nginx
               docker compose -f docker-compose-strayos-deploy.yml exec nginx nginx -s reload
+              docker system prune -af --filter until=24h
             "
 pipelines:
   branches:
