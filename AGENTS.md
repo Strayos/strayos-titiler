@@ -6,3 +6,4 @@
 ## Behaviour 
 * run pycompile after making changes to the code and test if the code compiles
 * after making changes check if STRAYOS.md contains data which is outdated and update the info
+* dont make changes to the dockerfiles without understanding the nginx configs for the files

@@ -67,14 +67,15 @@ Bitbucket main branch
   -> rsync repository to ~/strayos-titiler on the VM
   -> export TITILER_IMAGE=${DOCKER_HUB_USER}/strayos-titiler:app
   -> docker compose -f docker-compose-strayos-deploy.yml pull
-  -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait prometheus node-exporter cadvisor grafana
+  -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate prometheus
+  -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait node-exporter cadvisor grafana
   -> for each backend from titiler-1 to titiler-6: docker compose -f docker-compose-strayos-deploy.yml up -d --wait <service>
   -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait nginx
   -> docker compose -f docker-compose-strayos-deploy.yml exec nginx nginx -s reload
   -> delete temporary NSG rule
 ```
 
-The deploy step starts Prometheus, node-exporter, cAdvisor, and Grafana, then starts workers sequentially with a short delay between services. This avoids replacing all six TiTiler backends at once. Nginx is started after the backends and Grafana exist so its upstream service names resolve cleanly. The deploy rsync excludes `.env`, so VM-local compose settings can persist across deployments.
+The deploy step force-recreates Prometheus before starting node-exporter, cAdvisor, and Grafana. Prometheus reads its bind-mounted configuration only at process startup, so the forced recreation ensures new scrape jobs are loaded instead of leaving the process on an older in-memory configuration. The deploy then starts workers sequentially with a short delay between services. This avoids replacing all six TiTiler backends at once. Nginx is started after the backends and Grafana exist so its upstream service names resolve cleanly. The deploy rsync excludes `.env`, so VM-local compose settings can persist across deployments.
 
 ## Azure Infrastructure: Production
 
@@ -246,9 +247,11 @@ The stack includes Prometheus and Grafana for observability:
 | Grafana | `3000` | `https://titiler.strayos.com/grafana/` through nginx. |
 
 - **Prometheus** scrapes metrics from the TiTiler backends using `dockerfiles/prometheus.yml`.
-- **Grafana** is pre-provisioned with the Prometheus datasource and the `Strayos TiTiler Overview` and `Strayos System & Containers` dashboards from `dockerfiles/grafana/`.
+- **Grafana** is pre-provisioned with the Prometheus datasource and the `TiTiler API Traffic & Performance` and `TiTiler Infrastructure & Containers` dashboards from `dockerfiles/grafana/`.
+- `Requests Served` counts requests across all TiTiler backends over the selected Grafana time range with `sum(increase(starlette_requests_total{job="titiler"}[$__range]))`. Using `increase` accounts for request-counter resets when backends are recreated.
 - `node-exporter` covers VM CPU, memory, and filesystem metrics.
 - `cAdvisor` covers container CPU, memory, network, and filesystem usage.
+- Prometheus is force-recreated during deployment because it does not automatically reload changes to the bind-mounted `prometheus.yml` file.
 - Production does not publish host ports `3000` or `9090`; users reach Grafana only through nginx.
 - Grafana is configured for sub-path serving with `GF_SERVER_ROOT_URL=https://titiler.strayos.com/grafana/` and `GF_SERVER_SERVE_FROM_SUB_PATH=true`.
 - Anonymous access is disabled by default. Set `GRAFANA_ANONYMOUS_ENABLED=true` in `~/strayos-titiler/.env` for a public view-only dashboard, and set `GRAFANA_ADMIN_PASSWORD` there to avoid the default fallback password.

@@ -56,7 +56,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
+        "w": 4,
         "x": 0,
         "y": 0
       },
@@ -109,8 +109,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 6,
+        "w": 4,
+        "x": 4,
         "y": 0
       },
       "id": 2,
@@ -143,6 +143,62 @@
         }
       ],
       "title": "Requests Per Second",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Total requests served by all TiTiler backends during the selected dashboard time range.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 0
+      },
+      "id": 6,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(starlette_requests_total{job=\"titiler\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "requests served",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Requests Served",
       "type": "stat"
     },
     {
@@ -339,7 +395,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Strayos TiTiler Overview",
+  "description": "TiTiler backend availability, request traffic, response status codes, latency, and busiest endpoints.",
+  "title": "TiTiler API Traffic & Performance",
   "uid": "strayos-titiler-overview",
   "version": 1,
   "weekStart": ""
