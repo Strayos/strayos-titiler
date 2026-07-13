@@ -551,7 +551,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Strayos System & Containers",
+  "description": "Production host capacity and per-container CPU, memory, disk, and network usage.",
+  "title": "TiTiler Infrastructure & Containers",
   "uid": "strayos-system-containers",
   "version": 1,
   "weekStart": ""
