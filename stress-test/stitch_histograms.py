@@ -4,6 +4,14 @@ from pathlib import Path
 
 from PIL import Image
 
+STRESS_TEST_DIR = Path(__file__).resolve().parent
+
+
+def resolve_output_dir(output_dir: str) -> Path:
+    """Resolve relative output directories inside the stress-test directory."""
+    path = Path(output_dir)
+    return path if path.is_absolute() else STRESS_TEST_DIR / path
+
 
 def stitch_histograms(output_dirs: list[str]) -> None:
     """Find all histogram PNGs in given directories and stitch them into a 2-column mosaic.
@@ -17,7 +25,7 @@ def stitch_histograms(output_dirs: list[str]) -> None:
     """
     histograms: list[Path] = []
     for d in output_dirs:
-        histograms.extend(sorted(Path(d).glob("histogram_*.png")))
+        histograms.extend(sorted(resolve_output_dir(d).glob("histogram_*.png")))
 
     if not histograms:
         print("No histogram PNGs found in the specified directories.")
