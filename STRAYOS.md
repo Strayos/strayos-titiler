@@ -25,6 +25,12 @@ This app is not primarily used via a whl file installation
 * Start the Strayos TiTiler stack with `docker-compose-strayos-dev.yml` when you want to run code from this project instead of an installed package. Development Nginx uses `dockerfiles/nginx-strayos-dev.conf` and serves HTTP on `http://localhost` without requiring the production TLS certificates.
 * Production deploys use `docker-compose-strayos-deploy.yml`, with the image supplied through `TITILER_IMAGE` and defaulting to `strayos1/strayos-titiler:app`.
 
+## Stress Testing
+
+* Activate the repository virtual environment before running a test: `source .venv/bin/activate`.
+* Run peak load from any working directory with `python stress-test/main.py --peak-load` (adjust the script path when outside the repository root).
+* Relative output directories are resolved against `stress-test/`. Peak-load artifacts, including the stitched histogram mosaic, are written to `stress-test/output_peak_load/` regardless of the caller's working directory.
+
 ## CI/CD Pipeline
 
 ### Branch behavior
@@ -128,7 +134,7 @@ alloy
   -> reads the nginx container log through the read-only Docker socket
   -> loki:3100
 loki
-  -> 30-day client-traffic event store in the loki-data volume
+  -> 7-day client-traffic event store in the loki-data volume
 titiler_backends
   -> titiler-1:8000  # container: titiler-worker-1, 1 Uvicorn worker
   -> titiler-2:8000  # container: titiler-worker-2, 1 Uvicorn worker
@@ -152,13 +158,13 @@ All services use Docker's `local` logging driver with file rotation:
 | nginx | 50m | 3 | 150 MB |
 | prometheus, node-exporter, cAdvisor, Grafana, Loki, Alloy | 10m | 3 | 30 MB each |
 
-Total worst-case Docker local-log usage is approximately 1.23 GB across all production services. Logs are stored at `/var/lib/docker/containers/<id>/local-logs/` in binary format (view with `docker logs`). Loki's indexed event data is separate from these rotated container logs and is retained for 30 days in the `loki-data` named volume.
+Total worst-case Docker local-log usage is approximately 1.23 GB across all production services. Logs are stored at `/var/lib/docker/containers/<id>/local-logs/` in binary format (view with `docker logs`). Loki's indexed event data is separate from these rotated container logs and is retained for 7 days in the `loki-data` named volume.
 
-Prometheus stores its TSDB in `prometheus-data`. Grafana stores its application data in `grafana-data`. Loki stores chunks and indexes in `loki-data`, and Alloy stores Docker log positions in `alloy-data` so a collector restart can resume without intentionally replaying the complete available log. Provisioned datasources and dashboards come from `dockerfiles/grafana/`.
+Prometheus stores its TSDB in `prometheus-data` with a 7-day sample retention period. Grafana stores its application data in `grafana-data`. Loki stores chunks and indexes in `loki-data` with a 7-day event retention period, and Alloy stores Docker log positions in `alloy-data` so a collector restart can resume without intentionally replaying the complete available log. Provisioned datasources and dashboards come from `dockerfiles/grafana/`.
 
 Nginx emits compact JSON for completed HTTPS TiTiler API requests. The log deliberately excludes query strings because the `url` parameter can contain signed raster credentials. It also excludes `/grafana/`, `/metrics`, `/healthz`, and port-80 redirects. The event records a normalized endpoint, client-visible status, total Nginx request time, response size, upstream details, and cache delivery state. Cache keys, validity, routing, and stale-response behavior are unchanged by this instrumentation.
 
-The request path performs no synchronous call to Loki: Nginx writes its normal container access log, and Alloy tails it asynchronously through Docker. The structured line is roughly a few hundred bytes per request. Loki retention is time-based rather than size-based, so `loki-data` disk growth must be monitored as traffic changes; reduce `retention_period` in `dockerfiles/loki/loki-config.yml` if the 30-day window becomes too large for the VM disk.
+The request path performs no synchronous call to Loki: Nginx writes its normal container access log, and Alloy tails it asynchronously through Docker. The structured line is roughly a few hundred bytes per request. Loki retention is time-based rather than size-based, so `loki-data` disk growth must still be monitored as traffic changes even with the 7-day window.
 
 Nginx routes requests using a consistent hash:
 
@@ -264,7 +270,7 @@ The stack keeps two complementary observability paths:
 
 - **Prometheus** scrapes metrics from the TiTiler backends using `dockerfiles/prometheus.yml`.
 - **Alloy** discovers only the `nginx` container through the read-only Docker socket and forwards its logs to Loki. Its persisted positions live in `alloy-data`.
-- **Loki** stores the Nginx client-traffic events for 30 days using the single-binary filesystem configuration in `dockerfiles/loki/loki-config.yml`.
+- **Loki** stores the Nginx client-traffic events for 7 days using the single-binary filesystem configuration in `dockerfiles/loki/loki-config.yml`.
 - **Grafana** is pre-provisioned with Prometheus and Loki datasources and the `TiTiler API Traffic & Performance` and `TiTiler Infrastructure & Containers` dashboards from `dockerfiles/grafana/`.
 - `API Requests Served`, `API Requests/sec`, `Requests By Status Code`, `Request Latency (Nginx)`, and `Top Endpoints` are computed from Nginx events in Loki. They represent client-visible HTTPS TiTiler API responses and include both cached and backend-served responses.
 - `Cached Requests Served` includes Nginx `HIT`, `STALE`, `UPDATING`, and `REVALIDATED` responses.
