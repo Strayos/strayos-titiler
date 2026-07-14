@@ -106,6 +106,43 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  loki:
+    container_name: loki
+    image: grafana/loki:3.7.0
+    expose:
+      - "3100"
+    volumes:
+      - ./dockerfiles/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command:
+      - "-config.file=/etc/loki/local-config.yaml"
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  alloy:
+    container_name: alloy
+    image: grafana/alloy:v1.16.1
+    volumes:
+      - ./dockerfiles/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    command:
+      - "run"
+      - "--storage.path=/var/lib/alloy/data"
+      - "/etc/alloy/config.alloy"
+    depends_on:
+      - loki
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   node-exporter:
     container_name: node-exporter
     image: prom/node-exporter:latest
@@ -169,6 +206,7 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
     depends_on:
       - prometheus
+      - loki
     restart: unless-stopped
     logging:
       driver: local
@@ -179,4 +217,6 @@ services:
 volumes:
   prometheus-data:
   grafana-data:
+  loki-data:
+  alloy-data:
   nginx-cache:

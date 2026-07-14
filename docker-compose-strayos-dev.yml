@@ -57,10 +57,8 @@ services:
     image: nginx
     ports:
       - "80:80"
-      - "443:443"
     volumes:
-      - ./dockerfiles/nginx-strayos.conf:/etc/nginx/nginx.conf:ro
-      - /etc/ssl/strayos:/etc/nginx/ssl:ro
+      - ./dockerfiles/nginx-strayos-dev.conf:/etc/nginx/nginx.conf:ro
       - nginx-cache:/var/cache/nginx
     depends_on:
       - titiler-1
@@ -84,6 +82,33 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--web.console.libraries=/usr/share/prometheus/console_libraries"
       - "--web.console.templates=/usr/share/prometheus/consoles"
+    restart: unless-stopped
+
+  loki:
+    container_name: loki
+    image: grafana/loki:3.7.0
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./dockerfiles/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command:
+      - "-config.file=/etc/loki/local-config.yaml"
+    restart: unless-stopped
+
+  alloy:
+    container_name: alloy
+    image: grafana/alloy:v1.16.1
+    volumes:
+      - ./dockerfiles/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    command:
+      - "run"
+      - "--storage.path=/var/lib/alloy/data"
+      - "/etc/alloy/config.alloy"
+    depends_on:
+      - loki
     restart: unless-stopped
 
   node-exporter:
@@ -127,11 +152,14 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=SimpleYetComplex
-      - GF_SERVER_ROOT_URL=https://titiler.strayos.com/grafana/
+      - GF_SERVER_ROOT_URL=http://localhost/grafana/
       - GF_SERVER_SERVE_FROM_SUB_PATH=true
     depends_on:
       - prometheus
+      - loki
     restart: unless-stopped
 
 volumes:
+  loki-data:
+  alloy-data:
   nginx-cache:

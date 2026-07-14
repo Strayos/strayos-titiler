@@ -27,6 +27,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Number of TiTiler backend targets currently reachable by Prometheus.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -56,7 +57,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 8,
         "x": 0,
         "y": 0
       },
@@ -89,19 +90,21 @@
           "refId": "A"
         }
       ],
-      "title": "Healthy Backends",
+      "title": "Healthy TiTiler Backends",
       "type": "stat"
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "loki",
+        "uid": "loki"
       },
+      "description": "Client requests completed by Nginx, including cached and backend-served responses. One-minute rolling rate.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
+          "decimals": 0,
           "mappings": [],
           "unit": "reqps"
         },
@@ -109,14 +112,14 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 4,
+        "w": 8,
+        "x": 8,
         "y": 0
       },
       "id": 2,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
@@ -132,25 +135,25 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "loki",
+            "uid": "loki"
           },
+          "direction": "backward",
           "editorMode": "code",
-          "expr": "sum(rate(starlette_requests_total{job=\"titiler\"}[5m]))",
-          "legendFormat": "requests",
-          "range": true,
+          "expr": "sum(rate({service_name=\"nginx\"} | json traffic=\"traffic\" | traffic=\"api\" [1m])) or vector(0)",
+          "queryType": "instant",
           "refId": "A"
         }
       ],
-      "title": "Requests Per Second",
+      "title": "API Requests/sec",
       "type": "stat"
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "loki",
+        "uid": "loki"
       },
-      "description": "Total requests served by all TiTiler backends during the selected dashboard time range.",
+      "description": "All HTTPS TiTiler API responses completed by Nginx in the selected dashboard time range. Grafana, metrics, health checks, and HTTP redirects are excluded.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -164,8 +167,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 8,
+        "w": 8,
+        "x": 16,
         "y": 0
       },
       "id": 6,
@@ -187,80 +190,135 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "loki",
+            "uid": "loki"
           },
+          "direction": "backward",
           "editorMode": "code",
-          "expr": "sum(increase(starlette_requests_total{job=\"titiler\"}[$__range]))",
-          "instant": true,
-          "legendFormat": "requests served",
-          "range": false,
+          "expr": "sum(count_over_time({service_name=\"nginx\"} | json traffic=\"traffic\" | traffic=\"api\" [$__range])) or vector(0)",
+          "queryType": "instant",
           "refId": "A"
         }
       ],
-      "title": "Requests Served",
+      "title": "API Requests Served",
       "type": "stat"
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "loki",
+        "uid": "loki"
       },
+      "description": "API responses delivered from the Nginx cache in the selected time range, including HIT, STALE, UPDATING, and REVALIDATED results.",
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 8,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": false
+          "color": {
+            "mode": "palette-classic"
           },
-          "unit": "reqps"
+          "decimals": 0,
+          "mappings": [],
+          "unit": "short"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 4,
         "w": 12,
-        "x": 12,
-        "y": 0
+        "x": 0,
+        "y": 4
       },
-      "id": 3,
+      "id": 7,
       "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
+        "textMode": "auto",
+        "wideLayout": true
       },
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "loki",
+            "uid": "loki"
           },
+          "direction": "backward",
           "editorMode": "code",
-          "expr": "sum by (status_code) (rate(starlette_requests_total{job=\"titiler\"}[5m]))",
-          "legendFormat": "{{status_code}}",
-          "range": true,
+          "expr": "sum(count_over_time({service_name=\"nginx\"} | json traffic=\"traffic\", delivery_source=\"delivery_source\" | traffic=\"api\" | delivery_source=~\"cache|cache_revalidated\" [$__range])) or vector(0)",
+          "queryType": "instant",
           "refId": "A"
         }
       ],
-      "title": "Requests By Status Code",
-      "type": "timeseries"
+      "title": "Cached Requests Served",
+      "type": "stat"
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "loki",
+        "uid": "loki"
       },
+      "description": "Client API responses obtained from a TiTiler upstream in the selected time range, including cache MISS, BYPASS, and EXPIRED results.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "id": 8,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "direction": "backward",
+          "editorMode": "code",
+          "expr": "sum(count_over_time({service_name=\"nginx\"} | json traffic=\"traffic\", delivery_source=\"delivery_source\" | traffic=\"api\" | delivery_source=\"backend\" [$__range])) or vector(0)",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ],
+      "title": "Backend Requests Served",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Client-facing Nginx request latency. This includes cache handling, upstream work when required, and response transmission.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -280,9 +338,203 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 4
+        "y": 8
       },
       "id": 4,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "direction": "backward",
+          "editorMode": "code",
+          "expr": "quantile_over_time(0.50, {service_name=\"nginx\"} | json traffic=\"traffic\", request_time=\"request_time\" | traffic=\"api\" | unwrap request_time [1m])",
+          "legendFormat": "p50",
+          "queryType": "range",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "direction": "backward",
+          "editorMode": "code",
+          "expr": "quantile_over_time(0.95, {service_name=\"nginx\"} | json traffic=\"traffic\", request_time=\"request_time\" | traffic=\"api\" | unwrap request_time [1m])",
+          "legendFormat": "p95",
+          "queryType": "range",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "direction": "backward",
+          "editorMode": "code",
+          "expr": "quantile_over_time(0.99, {service_name=\"nginx\"} | json traffic=\"traffic\", request_time=\"request_time\" | traffic=\"api\" | unwrap request_time [1m])",
+          "legendFormat": "p99",
+          "queryType": "range",
+          "refId": "C"
+        }
+      ],
+      "title": "Request Latency (Nginx)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Rate of Nginx-completed TiTiler API responses grouped by the client-visible HTTP status code.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "direction": "backward",
+          "editorMode": "code",
+          "expr": "sum by (status) (rate({service_name=\"nginx\"} | json traffic=\"traffic\", status=\"status\" | traffic=\"api\" [1m]))",
+          "legendFormat": "{{status}}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Requests By Status Code",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Most-used normalized TiTiler API endpoints in the selected time range. Tile coordinates and raster query strings are never labels.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "decimals": 0,
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "direction": "backward",
+          "editorMode": "code",
+          "expr": "topk(10, sum by (endpoint) (count_over_time({service_name=\"nginx\"} | json traffic=\"traffic\", endpoint=\"endpoint\" | traffic=\"api\" [$__range])))",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ],
+      "title": "Top Endpoints",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Requests observed inside TiTiler. This is a backend diagnostic and can be lower than Nginx traffic when cache hits are served.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 10,
       "options": {
         "legend": {
           "calcs": [],
@@ -302,89 +554,23 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(starlette_request_duration_seconds_bucket{job=\"titiler\"}[5m])) by (le))",
-          "legendFormat": "p95",
+          "expr": "sum(rate(starlette_requests_total{job=\"titiler\"}[5m]))",
+          "legendFormat": "backend requests",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum(rate(starlette_request_duration_seconds_bucket{job=\"titiler\"}[5m])) by (le))",
-          "legendFormat": "p50",
-          "range": true,
-          "refId": "B"
         }
       ],
-      "title": "Request Latency",
+      "title": "Backend Request Rate (Starlette)",
       "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 8
-      },
-      "id": 5,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "topk(10, sum by (path) (rate(starlette_requests_total{job=\"titiler\"}[5m])))",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "{{path}}",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Top Endpoints",
-      "type": "table"
     }
   ],
   "refresh": "30s",
   "schemaVersion": 39,
   "style": "dark",
   "tags": [
-    "strayos",
-    "titiler"
+    "api",
+    "traffic",
+    "performance"
   ],
   "templating": {
     "list": []
@@ -395,9 +581,9 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "description": "TiTiler backend availability, request traffic, response status codes, latency, and busiest endpoints.",
+  "description": "Client-facing Nginx traffic, delivery source, status, latency, endpoints, and TiTiler backend health.",
   "title": "TiTiler API Traffic & Performance",
   "uid": "strayos-titiler-overview",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

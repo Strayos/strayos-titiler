@@ -125,6 +125,7 @@ definitions:
               docker compose -f docker-compose-strayos-deploy.yml pull
               # Prometheus does not automatically reload its bind-mounted config.
               docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate prometheus
+              docker compose -f docker-compose-strayos-deploy.yml up -d --wait loki alloy
               docker compose -f docker-compose-strayos-deploy.yml up -d --wait node-exporter cadvisor grafana
               for i in 1 2 3 4 5 6; do
                 docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate titiler-\$i

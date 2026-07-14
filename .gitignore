@@ -112,3 +112,6 @@ deployment/k8s/titiler/values-test.yaml
 
 dev_notebooks/*
 scratch/
+
+# Generated stress-test reports and artifacts
+stress-test/output_*/
