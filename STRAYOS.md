@@ -22,7 +22,7 @@ This app is not primarily used via a whl file installation
 
 ## Local Development
 
-* Start the Strayos TiTiler stack with `docker-compose-strayos-dev.yml` when you want to run code from this project instead of an installed package.
+* Start the Strayos TiTiler stack with `docker-compose-strayos-dev.yml` when you want to run code from this project instead of an installed package. Development Nginx uses `dockerfiles/nginx-strayos-dev.conf` and serves HTTP on `http://localhost` without requiring the production TLS certificates.
 * Production deploys use `docker-compose-strayos-deploy.yml`, with the image supplied through `TITILER_IMAGE` and defaulting to `strayos1/strayos-titiler:app`.
 
 ## CI/CD Pipeline
@@ -68,6 +68,7 @@ Bitbucket main branch
   -> export TITILER_IMAGE=${DOCKER_HUB_USER}/strayos-titiler:app
   -> docker compose -f docker-compose-strayos-deploy.yml pull
   -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate prometheus
+  -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait loki alloy
   -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait node-exporter cadvisor grafana
   -> for each backend from titiler-1 to titiler-6: docker compose -f docker-compose-strayos-deploy.yml up -d --wait <service>
   -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait nginx
@@ -75,7 +76,7 @@ Bitbucket main branch
   -> delete temporary NSG rule
 ```
 
-The deploy step force-recreates Prometheus before starting node-exporter, cAdvisor, and Grafana. Prometheus reads its bind-mounted configuration only at process startup, so the forced recreation ensures new scrape jobs are loaded instead of leaving the process on an older in-memory configuration. The deploy then starts workers sequentially with a short delay between services. This avoids replacing all six TiTiler backends at once. Nginx is started after the backends and Grafana exist so its upstream service names resolve cleanly. The deploy rsync excludes `.env`, so VM-local compose settings can persist across deployments.
+The deploy step force-recreates Prometheus, then starts Loki and Alloy before the remaining monitoring services and Grafana. Prometheus reads its bind-mounted configuration only at process startup, so the forced recreation ensures new scrape jobs are loaded instead of leaving the process on an older in-memory configuration. The deploy then starts workers sequentially with a short delay between services. This avoids replacing all six TiTiler backends at once. Nginx is started after the backends and Grafana exist so its upstream service names resolve cleanly. The deploy rsync excludes `.env`, so VM-local compose settings can persist across deployments.
 
 ## Azure Infrastructure: Production
 
@@ -106,21 +107,28 @@ Existing SSH allow rules include `SSH_whitelist`. The deploy script deletes the 
 
 ### Runtime Topology
 
-`docker-compose-strayos-deploy.yml` runs six TiTiler backend services plus nginx, Prometheus, and Grafana:
+`docker-compose-strayos-deploy.yml` runs six TiTiler backend services plus the routing and observability services:
 
 ```text
 public web :80/:443
   -> nginx
       /grafana/ -> grafana:3000
       /         -> titiler_backends
+      structured API access events -> Docker local log
 grafana
   -> prometheus:9090
+  -> loki:3100
 prometheus
   -> titiler-1..6:8000/metrics
 node-exporter
   -> VM host metrics
 cadvisor
   -> Docker container metrics
+alloy
+  -> reads the nginx container log through the read-only Docker socket
+  -> loki:3100
+loki
+  -> 30-day client-traffic event store in the loki-data volume
 titiler_backends
   -> titiler-1:8000  # container: titiler-worker-1, 1 Uvicorn worker
   -> titiler-2:8000  # container: titiler-worker-2, 1 Uvicorn worker
@@ -142,12 +150,15 @@ All services use Docker's `local` logging driver with file rotation:
 | ------- | ---------- | ---------- | ---------------- |
 | titiler-1..6 | 50m | 3 | 150 MB |
 | nginx | 50m | 3 | 150 MB |
-| prometheus | 10m | 3 | 30 MB |
-| grafana | 10m | 3 | 30 MB |
+| prometheus, node-exporter, cAdvisor, Grafana, Loki, Alloy | 10m | 3 | 30 MB each |
 
-Total worst-case disk usage: ~1.1 GB across all services. Logs are stored at `/var/lib/docker/containers/<id>/local-logs/` in binary format (view with `docker logs`).
+Total worst-case Docker local-log usage is approximately 1.23 GB across all production services. Logs are stored at `/var/lib/docker/containers/<id>/local-logs/` in binary format (view with `docker logs`). Loki's indexed event data is separate from these rotated container logs and is retained for 30 days in the `loki-data` named volume.
 
-Prometheus stores its TSDB in the Docker named volume `prometheus-data`. Grafana stores its application data in `grafana-data`, while provisioned datasources and dashboards come from `dockerfiles/grafana/`.
+Prometheus stores its TSDB in `prometheus-data`. Grafana stores its application data in `grafana-data`. Loki stores chunks and indexes in `loki-data`, and Alloy stores Docker log positions in `alloy-data` so a collector restart can resume without intentionally replaying the complete available log. Provisioned datasources and dashboards come from `dockerfiles/grafana/`.
+
+Nginx emits compact JSON for completed HTTPS TiTiler API requests. The log deliberately excludes query strings because the `url` parameter can contain signed raster credentials. It also excludes `/grafana/`, `/metrics`, `/healthz`, and port-80 redirects. The event records a normalized endpoint, client-visible status, total Nginx request time, response size, upstream details, and cache delivery state. Cache keys, validity, routing, and stale-response behavior are unchanged by this instrumentation.
+
+The request path performs no synchronous call to Loki: Nginx writes its normal container access log, and Alloy tails it asynchronously through Docker. The structured line is roughly a few hundred bytes per request. Loki retention is time-based rather than size-based, so `loki-data` disk growth must be monitored as traffic changes; reduce `retention_period` in `dockerfiles/loki/loki-config.yml` if the 30-day window becomes too large for the VM disk.
 
 Nginx routes requests using a consistent hash:
 
@@ -235,26 +246,46 @@ Consistent hashing is best-effort, not hard pinning. If the selected backend ret
 
 Six single-worker backends (not `uvicorn --workers 6`) reserve 2 of the 8 vCPUs for the OS, Nginx, and overhead, while keeping each backend addressable by Nginx for per-URL routing.
 
-### Monitoring: Prometheus & Grafana
+### Monitoring and Traffic Observability
 
-The stack includes Prometheus and Grafana for observability:
+The stack keeps two complementary observability paths:
+
+- Prometheus, node-exporter, and cAdvisor provide backend, VM, and container metrics. Removing them would break backend health and the infrastructure dashboard.
+- Alloy and Loki provide exact Nginx request events. Removing them would break the client-facing traffic, delivery-source, status, latency, and endpoint panels.
+- Grafana presents both data sources. These services overlap in presentation, not in what they measure.
 
 | Service | Internal port | Public access |
 | ------- | ------------- | ------------- |
 | Prometheus | `9090` | None; Docker network only. |
 | node-exporter | `9100` | None; Docker network only. |
 | cAdvisor | `8080` | None; Docker network only. |
+| Loki | `3100` | None; Docker network only. |
 | Grafana | `3000` | `https://titiler.strayos.com/grafana/` through nginx. |
 
 - **Prometheus** scrapes metrics from the TiTiler backends using `dockerfiles/prometheus.yml`.
-- **Grafana** is pre-provisioned with the Prometheus datasource and the `TiTiler API Traffic & Performance` and `TiTiler Infrastructure & Containers` dashboards from `dockerfiles/grafana/`.
-- `Requests Served` counts requests across all TiTiler backends over the selected Grafana time range with `sum(increase(starlette_requests_total{job="titiler"}[$__range]))`. Using `increase` accounts for request-counter resets when backends are recreated.
+- **Alloy** discovers only the `nginx` container through the read-only Docker socket and forwards its logs to Loki. Its persisted positions live in `alloy-data`.
+- **Loki** stores the Nginx client-traffic events for 30 days using the single-binary filesystem configuration in `dockerfiles/loki/loki-config.yml`.
+- **Grafana** is pre-provisioned with Prometheus and Loki datasources and the `TiTiler API Traffic & Performance` and `TiTiler Infrastructure & Containers` dashboards from `dockerfiles/grafana/`.
+- `API Requests Served`, `API Requests/sec`, `Requests By Status Code`, `Request Latency (Nginx)`, and `Top Endpoints` are computed from Nginx events in Loki. They represent client-visible HTTPS TiTiler API responses and include both cached and backend-served responses.
+- `Cached Requests Served` includes Nginx `HIT`, `STALE`, `UPDATING`, and `REVALIDATED` responses.
+- `Backend Requests Served` includes responses obtained from an upstream on `MISS`, `BYPASS`, or `EXPIRED`, plus uncached API locations that contacted an upstream.
+- The dashboard intentionally shows dedicated delivery totals only for cached and backend-served responses. Rare responses generated directly by Nginx remain included in `API Requests Served` and the status-code panel but do not have a separate summary panel.
+- Nginx normalizes high-cardinality tile coordinates into endpoint templates before logging. Unknown paths are grouped as `other_api`; raw request URIs are not used as Loki labels.
+- Starlette metrics remain available as backend diagnostics. They measure work that reached TiTiler and can be lower than Nginx request totals when Nginx serves cache hits.
 - `node-exporter` covers VM CPU, memory, and filesystem metrics.
 - `cAdvisor` covers container CPU, memory, network, and filesystem usage.
 - Prometheus is force-recreated during deployment because it does not automatically reload changes to the bind-mounted `prometheus.yml` file.
-- Production does not publish host ports `3000` or `9090`; users reach Grafana only through nginx.
+- Production does not publish host ports `3000`, `3100`, or `9090`; users reach Grafana only through nginx.
 - Grafana is configured for sub-path serving with `GF_SERVER_ROOT_URL=https://titiler.strayos.com/grafana/` and `GF_SERVER_SERVE_FROM_SUB_PATH=true`.
 - Anonymous access is disabled by default. Set `GRAFANA_ANONYMOUS_ENABLED=true` in `~/strayos-titiler/.env` for a public view-only dashboard, and set `GRAFANA_ADMIN_PASSWORD` there to avoid the default fallback password.
+
+#### Local observability validation (2026-07-14)
+
+- The development compose stack uses `dockerfiles/nginx-strayos-dev.conf`, publishes only port 80, and does not mount or require production TLS certificates. Production continues to use `dockerfiles/nginx-strayos.conf` with HTTPS.
+- A cold tile request logged `delivery_source=backend` and `cache_status=MISS`; the identical follow-up logged `delivery_source=cache` and `cache_status=HIT`.
+- Loki returned an exact total of 3 for an initial sequence of two tile requests and one validation request, split into 1 cached and 2 backend-served responses. Status, latency, and normalized endpoint queries all returned successfully.
+- A 500-request cached-tile smoke test at concurrency 32 returned 500 HTTP 200 responses in 1.488 seconds (336.1 requests/second from the local container client). The Loki tile total increased exactly from 2 to 502. The run itself split into 32 backend and 468 cached responses because its `nginx` test hostname created a cold cache key for the first concurrent wave.
+- This confirms event accounting and ingestion under a short burst. It is not an enabled-versus-disabled production performance benchmark, so production CPU, disk growth, and latency should still be watched after rollout.
 
 ## Checking Routing Stickiness
 

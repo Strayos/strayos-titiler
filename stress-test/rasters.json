@@ -1,0 +1,89 @@
+[
+    {
+        "name": "ortho_cog.tif",
+        "type": "orthophoto",
+        "url": "https://s3strayos.blob.core.windows.net/uploads/dev-anand/ortho_cog.tif",
+        "params": {"scale": 1}
+    },
+    {
+        "name": "dsm_cog.tif",
+        "type": "dsm",
+        "url": "https://s3strayos.blob.core.windows.net/uploads/dev-anand/dsm_cog.tif",
+        "params": {"scale": 1, "bidx": 1, "colormap_name": "spectral"}
+    },
+    {
+        "name": "dtm_cog.tif",
+        "type": "dtm",
+        "url": "https://s3strayos.blob.core.windows.net/uploads/dev-anand/dtm_cog.tif",
+        "params": {"scale": 1, "bidx": 1, "colormap_name": "spectral"}
+    },
+    {
+        "name": "dsm_slope_cog.tif",
+        "type": "dsm_slope",
+        "url": "https://s3strayos.blob.core.windows.net/uploads/dev-anand/dsm_slope_cog.tif",
+        "params": {"scale": 1}
+    },
+    {
+        "name": "dtm_slope_cog.tif",
+        "type": "dtm_slope",
+        "url": "https://s3strayos.blob.core.windows.net/uploads/dev-anand/dtm_slope_cog.tif",
+        "params": {"scale": 1}
+    },
+    {
+        "name": "dsm_hillshade_cog.tif",
+        "type": "dsm_hillshade",
+        "url": "https://s3strayos.blob.core.windows.net/uploads/dev-anand/dsm_hillshade_cog.tif",
+        "params": {"scale": 1}
+    },
+    {
+        "name": "dtm_hillshade_cog.tif",
+        "type": "dtm_hillshade",
+        "url": "https://s3strayos.blob.core.windows.net/uploads/dev-anand/dtm_hillshade_cog.tif",
+        "params": {"scale": 1}
+    },
+    {
+        "name": "rendered_dsm_hillshade.tif",
+        "type": "rendered_dsm_hillshade",
+        "url": "https://s3strayos.blob.core.windows.net/uploads/dev-anand/dsm_cog.tif",
+        "params": {
+            "scale": 1,
+            "bidx": 1,
+            "colormap_name": "spectral",
+            "algorithm": "hillshade",
+            "algorithm_params": {"azimuth": 315, "angle_altitude": 45, "buffer": 3},
+            "buffer": 3,
+            "resampling": "bilinear",
+            "reproject": "bilinear"
+        }
+    },
+    {
+        "name": "rendered_dtm_hillshade.tif",
+        "type": "rendered_dtm_hillshade",
+        "url": "https://s3strayos.blob.core.windows.net/uploads/dev-anand/dtm_cog.tif",
+        "params": {
+            "scale": 1,
+            "bidx": 1,
+            "colormap_name": "spectral",
+            "algorithm": "hillshade",
+            "algorithm_params": {"azimuth": 315, "angle_altitude": 45, "buffer": 3},
+            "buffer": 3,
+            "resampling": "bilinear",
+            "reproject": "bilinear"
+        }
+    },
+    {
+        "name": "rendered_slope.tif",
+        "type": "rendered_slope",
+        "url": "https://s3strayos.blob.core.windows.net/uploads/dev-anand/dtm_cog.tif",
+        "params": {
+            "scale": 1,
+            "bidx": 1,
+            "colormap_name": "spectral",
+            "algorithm": "slope",
+            "buffer": 3,
+            "resampling": "bilinear",
+            "reproject": "bilinear"
+        },
+        "test":true
+    }
+]
