@@ -195,6 +195,16 @@ Most configured variables are GDAL settings consumed through Rasterio/GDAL while
 
 ## Caching
 
+### Nginx Response Cache
+
+Nginx uses the `nginx-cache` named volume for a shared 21 GiB response cache. It caches tile responses and `GET`/`HEAD` requests to `/cog/statistics`; STAC statistics and GeoJSON `POST /cog/statistics` responses are not cached. The complete scheme, host, path, and query string form the cache key, so statistics requests with different COG URLs or options are separate entries.
+
+TiTiler sends `Cache-Control: public, max-age=5400` on successful GET responses, telling browsers and other downstream clients to cache a response for 5,400 seconds (90 minutes). The Nginx tile and COG statistics cache locations ignore that upstream header only when calculating their internal cache lifetime and use `proxy_cache_valid 200 12h` instead. Nginx still passes the original `Cache-Control` header to clients. Consequently, a browser caches a response for 90 minutes while Nginx can reuse the stored response for 12 hours without contacting TiTiler.
+
+The cache path also has `inactive=12h`. This is an eviction rule separate from the 12-hour freshness period: an entry that is not accessed for 12 hours can be deleted. Accessing an entry resets its inactivity timer, while the freshness period is measured from when the response was stored or last refreshed. Nginx may evict entries earlier when the combined tile and statistics cache approaches 21 GiB.
+
+The named volume persists across normal Nginx container restarts and recreations. Removing the `nginx-cache` volume, explicitly purging the cache, or losing the VM disk removes the cached responses.
+
 ### VSI Cache Disabled
 
 `VSI_CACHE=FALSE` disables GDAL's in-memory byte-range cache for `/vsicurl/` and `/vsis3/`. It was previously `TRUE` with `VSI_CACHE_SIZE=268435456` (256 MiB), but provided no benefit in this architecture:
