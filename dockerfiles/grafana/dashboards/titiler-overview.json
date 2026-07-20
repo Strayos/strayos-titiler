@@ -562,9 +562,66 @@
       ],
       "title": "Backend Request Rate (Starlette)",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Every client IP observed in completed TiTiler API requests during the selected dashboard time range, sorted by request count. The IP is parsed from each JSON log entry at query time and is not stored as a Loki label.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "decimals": 0,
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 11,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": true,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": true
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "direction": "backward",
+          "editorMode": "code",
+          "expr": "sort_desc(sum by (client_ip) (count_over_time({service_name=\"nginx\"} | json traffic=\"traffic\", client_ip=\"client_ip\" | traffic=\"api\" | client_ip!=\"\" [$__range])))",
+          "legendFormat": "{{client_ip}}",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ],
+      "title": "Client IPs (Selected Time Range)",
+      "type": "table"
     }
   ],
-  "refresh": "30s",
+  "refresh": "5m",
   "schemaVersion": 39,
   "style": "dark",
   "tags": [
@@ -581,9 +638,9 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "description": "Client-facing Nginx traffic, delivery source, status, latency, endpoints, and TiTiler backend health.",
+  "description": "Client-facing Nginx traffic, requester IPs, delivery source, status, latency, endpoints, and TiTiler backend health.",
   "title": "TiTiler API Traffic & Performance",
   "uid": "strayos-titiler-overview",
-  "version": 2,
+  "version": 3,
   "weekStart": ""
 }
