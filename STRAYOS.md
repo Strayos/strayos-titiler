@@ -184,14 +184,15 @@ Most configured variables are GDAL settings consumed through Rasterio/GDAL while
 | Variable | Current value | Meaning |
 | --- | --- | --- |
 | `CPL_TMPDIR` | `/tmp` | Points GDAL/CPL temporary-file operations at container-local `/tmp`. |
-| `GDAL_CACHEMAX` | `4096` | Sets GDAL's decoded raster block cache ceiling to 4096 MiB per TiTiler backend process. |
+| `GDAL_CACHEMAX` | `1024` | Sets GDAL's decoded raster block cache ceiling to 1024 MiB per TiTiler backend process. Blocks belong to open datasets and are released when those datasets close. |
 | `GDAL_INGESTED_BYTES_AT_OPEN` | `32768` | Makes GDAL read the first 32 KiB of a remote file when opening it, which can reduce extra metadata range requests for COGs. |
 | `GDAL_DISABLE_READDIR_ON_OPEN` | `EMPTY_DIR` | Prevents GDAL from listing the containing directory or bucket by pretending only the requested file exists. This reduces remote `LIST` calls, but can break datasets that need sidecar files such as external `.ovr` overviews. |
 | `GDAL_HTTP_MERGE_CONSECUTIVE_RANGES` | `YES` | Lets GDAL merge adjacent byte ranges into one HTTP request. |
 | `GDAL_HTTP_MULTIPLEX` | `YES` | Allows HTTP/2 multiplexing for parallel range reads when the server and libcurl support it. |
 | `GDAL_HTTP_VERSION` | `2` | Tells GDAL/libcurl to attempt HTTP/2 for HTTP/HTTPS requests. |
+| `CPL_VSIL_CURL_CACHE_SIZE` | `200000000` | Sets GDAL's process-global `/vsicurl/` downloaded-range LRU cache to 200,000,000 bytes (about 191 MiB) per backend. Unlike `VSI_CACHE`, this cache can reuse ranges after a file handle closes and reopens. |
 | `PYTHONWARNINGS` | `ignore` | Suppresses Python warnings. This keeps logs quiet, but can hide useful dependency or deprecation warnings. |
-| `VSI_CACHE` | `FALSE` | Disables GDAL's VSI cache. Disabled because in this architecture each request opens and closes the dataset once, so no byte range is ever read twice within a file handle's lifetime. |
+| `VSI_CACHE` | `FALSE` | Disables GDAL's generic per-file-handle VSI cache. Its expected benefit is limited because each request opens and closes its dataset; this does not disable the separate process-global `/vsicurl/` cache. |
 
 ## Caching
 
@@ -207,32 +208,32 @@ The named volume persists across normal Nginx container restarts and recreations
 
 ### VSI Cache Disabled
 
-`VSI_CACHE=FALSE` disables GDAL's in-memory byte-range cache for `/vsicurl/` and `/vsis3/`. It was previously `TRUE` with `VSI_CACHE_SIZE=268435456` (256 MiB), but provided no benefit in this architecture:
+`VSI_CACHE=FALSE` disables GDAL's generic per-file-handle in-memory byte-range cache for `/vsicurl/`, `/vsis3/`, and other VSI handlers. It was previously `TRUE` with `VSI_CACHE_SIZE=268435456` (256 MiB), but its benefit is limited in this architecture:
 
 - **Within a single request**: Each tile request opens the COG, reads metadata once (`rasterio.open()`), then reads tile data once (`dataset.read()`). No byte range is read twice.
 - **Across requests**: Each request opens a fresh dataset and closes it when done, destroying the file handle and its VSI cache. The next request starts with an empty cache.
 
-The VSI cache was allocated but never served a hit — dead memory overhead. Removing it frees up to 256 MiB per open handle.
+Keeping it disabled avoids up to 256 MiB of cache capacity per open handle. It does not disable the separate process-global `/vsicurl/` downloaded-range cache described below.
 
 ### How `GDAL_CACHEMAX` differs
 
-`GDAL_CACHEMAX=4096` caches **decoded raster blocks** at the process level, not per-file-handle. This persists across requests within the same worker:
+`GDAL_CACHEMAX=1024` sets the process-wide ceiling for **decoded raster blocks** belonging to currently open datasets. It can avoid repeated reads and decoding while an operation keeps a dataset open, but closing the dataset releases that dataset's blocks. TiTiler opens its reader inside each request and closes it afterward, so these decoded blocks generally do not persist into a later request:
 
 ```text
-Request 1: rasterio.open() -> read metadata -> read tile blocks A, B -> close
-Request 2: rasterio.open() -> read metadata -> read tile blocks B, C -> close
+Request 1: rasterio.open() -> read metadata -> read tile blocks A, B -> close and release blocks
+Request 2: rasterio.open() -> read metadata -> read tile blocks B, C -> close and release blocks
 ```
 
-Without VSI cache: raw bytes are re-fetched from Azure each time (fine — GDAL only fetches the ranges it needs).  
-With GDAL block cache: decoded blocks A and B from Request 1 may still be cached when Request 2 needs block B again, avoiding re-decode.
+The block cache remains useful within requests that revisit blocks, and for concurrent datasets open in the same process. Its 1024 MiB setting is a ceiling rather than a startup allocation.
 
-The GDAL block cache is the cache that matters. The VSI byte-range cache was a redundant layer.
+The generic per-file `VSI_CACHE` remains disabled. Cross-request raw-range reuse instead comes from GDAL's separate process-global `/vsicurl/` cache, explicitly sized by `CPL_VSIL_CURL_CACHE_SIZE=200000000`. That cache can retain downloaded ranges after a file handle closes, until entries are evicted, the cache is explicitly cleared, or the worker exits.
 
 ### Memory Budget
 
 ```
-6 backends * 4096 MiB GDAL_CACHEMAX = ~24 GiB ceiling (not startup allocation)
-No VSI overhead
+6 backends * 1024 MiB GDAL_CACHEMAX = ~6 GiB decoded-block ceiling (not startup allocation)
+6 backends * 200,000,000-byte /vsicurl/ cache = ~1.12 GiB total
+No per-file VSI_CACHE overhead
 32 GiB total RAM shared by GDAL cache, Python, Nginx, OS, request buffers, Azure Blob connections
 ```
 
@@ -248,7 +249,7 @@ ortho_cog.tif tile 2 -> titiler-worker-4
 ortho_cog.tif tile 3 -> titiler-worker-4
 ```
 
-This keeps each raster's decoded blocks in one backend's `GDAL_CACHEMAX`, avoiding duplication across workers.
+This keeps each raster's reusable downloaded byte ranges in one backend's process-global `/vsicurl/` cache where possible, avoiding duplication across workers. Decoded `GDAL_CACHEMAX` blocks are still useful during a request but are released when that request's dataset closes.
 
 ### Hot Raster Tradeoff
 
