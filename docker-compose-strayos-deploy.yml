@@ -5,12 +5,13 @@ x-titiler-common: &titiler-common
   command: ["uvicorn", "titiler.application.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--forwarded-allow-ips=*"]
   environment:
     - CPL_TMPDIR=/tmp
-    - GDAL_CACHEMAX=4096
+    - GDAL_CACHEMAX=1024
     - GDAL_INGESTED_BYTES_AT_OPEN=32768
     - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
     - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
     - GDAL_HTTP_MULTIPLEX=YES
     - GDAL_HTTP_VERSION=2
+    - CPL_VSIL_CURL_CACHE_SIZE=200000000
     - PYTHONWARNINGS=ignore
     - VSI_CACHE=FALSE
     - TITILER_API_SENTRY_DSN=https://40fcb66451659a7b535b08d1306a1ee7@sentry.strayos.com/17
