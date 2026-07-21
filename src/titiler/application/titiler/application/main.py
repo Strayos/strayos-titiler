@@ -11,6 +11,7 @@ from cogeo_mosaic.backends import MosaicBackend as MosaicJSONBackend
 from cogeo_mosaic.errors import MosaicAuthError, MosaicError, MosaicNotFoundError
 from fastapi import Depends, FastAPI, HTTPException, Query, Security
 from fastapi.security.api_key import APIKeyQuery
+from rio_tiler import __version__ as rio_tiler_version
 from rio_tiler.io import Reader, STACReader
 from starlette import status
 from starlette.middleware.cors import CORSMiddleware
@@ -346,6 +347,7 @@ def application_health_check():
     return {
         "versions": {
             "titiler": titiler_version,
+            "rio-tiler": rio_tiler_version,
             "rasterio": rasterio.__version__,
             "gdal": rasterio.__gdal_version__,
             "proj": rasterio.__proj_version__,

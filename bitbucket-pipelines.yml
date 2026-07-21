@@ -131,8 +131,8 @@ definitions:
                 docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate titiler-\$i
                 sleep 3
               done
-              docker compose -f docker-compose-strayos-deploy.yml up -d --wait nginx
-              docker compose -f docker-compose-strayos-deploy.yml exec nginx nginx -s reload
+              # Recreate Nginx so its file bind mount follows the config inode replaced by rsync.
+              docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate nginx
               docker system prune -af --filter until=24h
             "
 pipelines:
