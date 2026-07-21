@@ -77,12 +77,11 @@ Bitbucket main branch
   -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait loki alloy
   -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait node-exporter cadvisor grafana
   -> for each backend from titiler-1 to titiler-6: docker compose -f docker-compose-strayos-deploy.yml up -d --wait <service>
-  -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait nginx
-  -> docker compose -f docker-compose-strayos-deploy.yml exec nginx nginx -s reload
+  -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate nginx
   -> delete temporary NSG rule
 ```
 
-The deploy step force-recreates Prometheus, then starts Loki and Alloy before the remaining monitoring services and Grafana. Prometheus reads its bind-mounted configuration only at process startup, so the forced recreation ensures new scrape jobs are loaded instead of leaving the process on an older in-memory configuration. The deploy then starts workers sequentially with a short delay between services. This avoids replacing all six TiTiler backends at once. Nginx is started after the backends and Grafana exist so its upstream service names resolve cleanly. The deploy rsync excludes `.env`, so VM-local compose settings can persist across deployments.
+The deploy step force-recreates Prometheus, then starts Loki and Alloy before the remaining monitoring services and Grafana. Prometheus reads its bind-mounted configuration only at process startup, so the forced recreation ensures new scrape jobs are loaded instead of leaving the process on an older in-memory configuration. The deploy then starts workers sequentially with a short delay between services. This avoids replacing all six TiTiler backends at once. Nginx is force-recreated after the backends and Grafana exist so its upstream service names resolve cleanly and its file bind mount follows the configuration inode replaced by rsync. The deploy rsync excludes `.env`, so VM-local compose settings can persist across deployments.
 
 ## Azure Infrastructure: Production
 
@@ -147,6 +146,10 @@ titiler_backends
 Each TiTiler backend is a separate process with its own Python interpreter, Rasterio/GDAL state, and GDAL block cache. There is no shared memory cache across workers.
 
 Each backend has a healthcheck that curls `http://localhost:8000/healthz` every 30s with a 10s timeout, 3 retries, and a 10s start period. Nginx has a lightweight `nginx -t` healthcheck with the same timing.
+
+The public `https://titiler.strayos.com/healthz` response includes installed version information for TiTiler, rio-tiler, Rasterio, GDAL, PROJ, and GEOS under the `versions` object.
+
+The production TLS listener negotiates HTTP/2 with compatible clients, allowing concurrent browser tile requests to share one multiplexed connection. Clients without HTTP/2 support fall back to HTTP/1.1. The port-80 listener continues to redirect to HTTPS, and the local development stack remains HTTP-only.
 
 ### Logging
 
