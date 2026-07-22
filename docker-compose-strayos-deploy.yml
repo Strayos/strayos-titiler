@@ -2,6 +2,7 @@ x-titiler-common: &titiler-common
   image: "${TITILER_IMAGE:-strayos1/strayos-titiler:app}"
   expose:
     - "8000"
+  mem_limit: 4g
   command: ["uvicorn", "titiler.application.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--forwarded-allow-ips=*"]
   environment:
     - CPL_TMPDIR=/tmp

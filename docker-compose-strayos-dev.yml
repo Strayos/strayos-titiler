@@ -4,10 +4,11 @@ x-titiler-common: &titiler-common
     dockerfile: dockerfiles/Dockerfile
   expose:
     - "8000"
+  mem_limit: 4g
   command: ["uvicorn", "titiler.application.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--forwarded-allow-ips=*"]
   environment:
     - CPL_TMPDIR=/tmp
-    - GDAL_CACHEMAX=4096
+    - GDAL_CACHEMAX=1024
     - GDAL_INGESTED_BYTES_AT_OPEN=32768
     - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
     - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
