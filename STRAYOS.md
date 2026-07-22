@@ -1,24 +1,12 @@
 # Strayos TiTiler Notes
 
-This file is supposed to serve as a working documentation for the strayos specific implementation of titiler
+This file documents the Strayos-specific TiTiler implementation and its production operations.
 
-There are two upstream origins to this project.
-* A Main upstream which is github used to sync changes from the original repo to our fork
-* a bitbucket upstream for us to push our changes for deployment
-
-## Tile sizes
-
-We assume that the raster's for which we fetch tiles for has a default block size of 512
+The repository uses GitHub to sync changes from the original TiTiler project and Bitbucket for Strayos deployment.
 
 ## Building Wheel Files
 
-Incase of doing a function app deployment or using in another app/service follow these steps
-
-* Make any changes necessary changes
-* build a wheel file to be using `build_whl_file.sh`
-* check run tests.
-
-This app is not primarily used via a whl file installation
+This application is normally deployed as a container. When another application or a function deployment requires a wheel, run the tests and then build it with `build_whl_file.sh`.
 
 ## Local Development
 
@@ -29,20 +17,20 @@ This app is not primarily used via a whl file installation
 
 * Activate the repository virtual environment before running a test: `source .venv/bin/activate`.
 * Run peak load from any working directory with `python stress-test/main.py --peak-load` (adjust the script path when outside the repository root).
-* Relative output directories are resolved against `stress-test/`. Peak-load artifacts, including the stitched histogram mosaic, are written to `stress-test/output_peak_load/` regardless of the caller's working directory.
+* Relative output directories are resolved against `stress-test/`. Each raster run stores the TileJSON, validation, and COG statistics responses alongside its tile timing CSV. Peak-load artifacts, including the stitched histogram mosaic, are written to `stress-test/output_peak_load/` regardless of the caller's working directory.
 
 ## CI/CD Pipeline
 
 ### Branch behavior
 
-- `main`: builds and pushes the Docker image, then exposes a manual production deploy step.
-- Other branches: builds the Docker image only.
+- `main`: builds and pushes the Docker image, then runs the production deploy step.
+- No pipeline is currently configured for other branches.
 - The clone depth is `1`, so pipeline steps operate on a shallow clone of the current branch.
 
 ### Deploy step
 
 - Uses `atlassian/default-image:4`.
-- Uses `concurrency-group: titiler-production-deploy` so production deploys do not overlap.
+- Uses `concurrency-group: titiler-app-deploy` so production deploys do not overlap.
 - Logs in to Azure with the service-principal variables `DEPLOY_AZURE_ID`, `DEPLOY_AZURE_PASS`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`.
 - Gets the Bitbucket runner public IP with `curl -s4 icanhazip.com`. The `-4` flag is required because the NSG rule targets an IPv4 destination.
 - Temporarily opens SSH from the runner IP, syncs the repo to the VM with `rsync`, starts the six TiTiler services one at a time, then reloads Nginx.
@@ -61,54 +49,29 @@ This app is not primarily used via a whl file installation
 | `TITILER_SERVER` | Repository | Public host or IP for the production VM. |
 | `TITILER_SSH_USER` | Repository | SSH user for the production VM. |
 
-## Deployment Flow
+### Deployment behavior
 
-The production deployment runs against the Azure VM and deploys the `app` image built from the Bitbucket main branch:
+The pipeline builds and pushes `${DOCKER_HUB_USER}/strayos-titiler:app`, temporarily allows SSH from the runner, and rsyncs the repository to `~/strayos-titiler` without overwriting the VM's `.env`. It then pulls the image and starts the observability services, six TiTiler backends, and Nginx. The temporary NSG rule is deleted during cleanup.
 
-```text
-Bitbucket main branch
-  -> build ${DOCKER_HUB_USER}/strayos-titiler:app
-  -> push ${DOCKER_HUB_USER}/strayos-titiler:app
-  -> create temporary NSG SSH allow rule
-  -> rsync repository to ~/strayos-titiler on the VM
-  -> export TITILER_IMAGE=${DOCKER_HUB_USER}/strayos-titiler:app
-  -> docker compose -f docker-compose-strayos-deploy.yml pull
-  -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate prometheus
-  -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait loki alloy
-  -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait node-exporter cadvisor grafana
-  -> for each backend from titiler-1 to titiler-6: docker compose -f docker-compose-strayos-deploy.yml up -d --wait <service>
-  -> docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate nginx
-  -> delete temporary NSG rule
-```
-
-The deploy step force-recreates Prometheus, then starts Loki and Alloy before the remaining monitoring services and Grafana. Prometheus reads its bind-mounted configuration only at process startup, so the forced recreation ensures new scrape jobs are loaded instead of leaving the process on an older in-memory configuration. The deploy then starts workers sequentially with a short delay between services. This avoids replacing all six TiTiler backends at once. Nginx is force-recreated after the backends and Grafana exist so its upstream service names resolve cleanly and its file bind mount follows the configuration inode replaced by rsync. The deploy rsync excludes `.env`, so VM-local compose settings can persist across deployments.
+Prometheus is force-recreated so it reads its bind-mounted configuration. Backends are replaced sequentially to avoid stopping all six at once. Nginx is recreated last so its upstream names resolve and its bind mount follows the configuration inode replaced by rsync. `bitbucket-pipelines.yml` is the source of truth for the exact command sequence.
 
 ## Azure Infrastructure: Production
 
 | Resource | Value |
 | --- | --- |
-| Subscription | `1c2680bc-ad06-4e7a-a43f-f69099c8c2fe` (`Microsoft Azure Sponsorship`) |
 | Resource group | `TiTiler` |
 | VM name | `app-titiler` |
 | VM size | `Standard_D8as_v5` |
 | VM CPU | 8 vCPUs |
 | VM RAM | 32 GiB |
 | VM OS disk | 61 GB |
-| VM public IP | `20.81.154.120` |
-| VM private IP | `10.9.0.4` |
-| VNet/subnet | `app-titiler-vnet` / `default` |
-| NIC | `app-titiler266_z1` |
 | NSG | `app-titiler-nsg` at NIC level (Azure NAT happens before NSG evaluation, so rules target the VM private IP) |
 | NSG rule name | `titiler_${BITBUCKET_BRANCH}_deploy` (`/` and `\` replaced with `_`) |
 | NSG destination port | `22` (SSH) |
 | NSG rule priority | `250` (auto-incremented by the deploy script until a free slot is found) |
 | SSH user | `azureuser` |
-| SSH private key (manual) | `~/.ssh/app-titiler_key.pem` |
-| SSH private key (pipeline) | `SSH_KEY_B64` (base64-encoded, decoded on the fly) |
-| Pipeline SSH vars | `TITILER_SERVER` (public IP), `TITILER_SSH_USER`, `SSH_KEY_B64` |
-| Service principal | `9e4d68a5-0c04-4094-aaea-1ac75ee9f35a` |
 
-Existing SSH allow rules include `SSH_whitelist`. The deploy script deletes the temporary rule it creates with `az network nsg rule delete --no-wait` during cleanup.
+Current addresses and Azure account identifiers are intentionally omitted because they can change. Consult Azure and the Bitbucket deployment variables when they are needed.
 
 ### Runtime Topology
 
@@ -135,15 +98,10 @@ alloy
 loki
   -> 7-day client-traffic event store in the loki-data volume
 titiler_backends
-  -> titiler-1:8000  # container: titiler-worker-1, 1 Uvicorn worker
-  -> titiler-2:8000  # container: titiler-worker-2, 1 Uvicorn worker
-  -> titiler-3:8000  # container: titiler-worker-3, 1 Uvicorn worker
-  -> titiler-4:8000  # container: titiler-worker-4, 1 Uvicorn worker
-  -> titiler-5:8000  # container: titiler-worker-5, 1 Uvicorn worker
-  -> titiler-6:8000  # container: titiler-worker-6, 1 Uvicorn worker
+  -> titiler-1..6:8000  # one Uvicorn worker per container
 ```
 
-Each TiTiler backend is a separate process with its own Python interpreter, Rasterio/GDAL state, and GDAL block cache. There is no shared memory cache across workers.
+Each TiTiler backend is a separate process with its own Python interpreter, Rasterio/GDAL state, and GDAL block cache. There is no shared memory cache across workers. Both development and production limit each TiTiler container to 4 GiB of memory.
 
 Each backend has a healthcheck that curls `http://localhost:8000/healthz` every 30s with a 10s timeout, 3 retries, and a 10s start period. Nginx has a lightweight `nginx -t` healthcheck with the same timing.
 
@@ -151,7 +109,17 @@ The public `https://titiler.strayos.com/healthz` response includes installed ver
 
 The production TLS listener negotiates HTTP/2 with compatible clients, allowing concurrent browser tile requests to share one multiplexed connection. Clients without HTTP/2 support fall back to HTTP/1.1. The port-80 listener continues to redirect to HTTPS, and the local development stack remains HTTP-only.
 
-### Logging
+### Observability and Logging
+
+Prometheus collects backend metrics, node-exporter collects VM metrics, and cAdvisor collects container metrics. Alloy asynchronously reads only the Nginx container log through the read-only Docker socket and sends its events to Loki. Grafana presents the Prometheus infrastructure data and Loki client-traffic data.
+
+| Service | Internal port | Production access |
+| ------- | ------------- | ----------------- |
+| Prometheus | `9090` | Docker network only |
+| node-exporter | `9100` | Docker network only |
+| cAdvisor | `8080` | Docker network only |
+| Loki | `3100` | Docker network only |
+| Grafana | `3000` | `https://titiler.strayos.com/grafana/` through Nginx |
 
 All services use Docker's `local` logging driver with file rotation:
 
@@ -163,24 +131,15 @@ All services use Docker's `local` logging driver with file rotation:
 
 Total worst-case Docker local-log usage is approximately 1.23 GB across all production services. Logs are stored at `/var/lib/docker/containers/<id>/local-logs/` in binary format (view with `docker logs`). Loki's indexed event data is separate from these rotated container logs and is retained for 7 days in the `loki-data` named volume.
 
-Prometheus stores its TSDB in `prometheus-data` with a 7-day sample retention period. Grafana stores its application data in `grafana-data`. Loki stores chunks and indexes in `loki-data` with a 7-day event retention period, and Alloy stores Docker log positions in `alloy-data` so a collector restart can resume without intentionally replaying the complete available log. Provisioned datasources and dashboards come from `dockerfiles/grafana/`.
+Prometheus stores its TSDB in `prometheus-data` with 7-day retention. Grafana uses `grafana-data`, Loki uses `loki-data` with 7-day retention, and Alloy stores its read positions in `alloy-data`. Datasources and the `TiTiler API Traffic & Performance` and `TiTiler Infrastructure & Containers` dashboards are provisioned from `dockerfiles/grafana/`.
 
 Nginx emits compact JSON for completed HTTPS TiTiler API requests. The log deliberately excludes query strings because the `url` parameter can contain signed raster credentials. It also excludes `/grafana/`, `/metrics`, `/healthz`, and port-80 redirects. The event records the direct requester IP from Nginx's `$remote_addr`, a normalized endpoint, client-visible status, total Nginx request time, response size, upstream details, and cache delivery state. The IP remains a JSON log field and is not promoted to a Loki label, avoiding a high-cardinality stream for every client. Cache keys, validity, routing, and stale-response behavior are unchanged by this instrumentation.
 
-The request path performs no synchronous call to Loki: Nginx writes its normal container access log, and Alloy tails it asynchronously through Docker. The structured line is roughly a few hundred bytes per request. Loki retention is time-based rather than size-based, so `loki-data` disk growth must still be monitored as traffic changes even with the 7-day window.
+The request path makes no synchronous call to Loki. Loki retention is time-based rather than size-based, so disk growth must still be monitored as traffic changes. Dashboard request totals come from Nginx and include cache hits; Starlette metrics count only work that reached a backend. `Cached Requests Served` includes `HIT`, `STALE`, `UPDATING`, and `REVALIDATED`; `Backend Requests Served` includes `MISS`, `BYPASS`, `EXPIRED`, and uncached requests that contacted an upstream.
 
-Nginx routes requests using a consistent hash:
+Production does not publish the Prometheus, Loki, or Grafana host ports. Grafana serves from `/grafana/`; anonymous access is disabled by default. VM-local `.env` values can set `GRAFANA_ANONYMOUS_ENABLED=true` and should set `GRAFANA_ADMIN_PASSWORD` instead of relying on the compose fallback.
 
-```nginx
-hash $titiler_hash_key consistent;
-```
-
-- For normal COG tile requests, `$titiler_hash_key` is the `url` query parameter. Requests for the same raster URL should usually go to the same TiTiler backend, improving cache locality.
-- Requests without a `url` query parameter fall back to hashing the full request URI.
-- This is not hard pinning. If the selected upstream has an error or connection reset, Nginx may route a request to another backend.
-- This was tested before and 86% to 99.7% of requests for each raster was found to be sticky
-
-### Environment Variables
+### Production Environment Variables
 
 Most configured variables are GDAL settings consumed through Rasterio/GDAL while TiTiler reads Cloud-Optimized GeoTIFFs and other remote raster data. They are not `TITILER_API_*` settings for enabling or disabling TiTiler application features.
 
@@ -203,33 +162,17 @@ Most configured variables are GDAL settings consumed through Rasterio/GDAL while
 
 Nginx uses the `nginx-cache` named volume for a shared 21 GiB response cache. It caches tile responses and `GET`/`HEAD` requests to `/cog/statistics`; STAC statistics and GeoJSON `POST /cog/statistics` responses are not cached. The complete scheme, host, path, and query string form the cache key, so statistics requests with different COG URLs or options are separate entries.
 
-TiTiler sends `Cache-Control: public, max-age=5400` on successful GET responses, telling browsers and other downstream clients to cache a response for 5,400 seconds (90 minutes). The Nginx tile and COG statistics cache locations ignore that upstream header only when calculating their internal cache lifetime and use `proxy_cache_valid 200 12h` instead. Nginx still passes the original `Cache-Control` header to clients. Consequently, a browser caches a response for 90 minutes while Nginx can reuse the stored response for 12 hours without contacting TiTiler.
+TiTiler sends `Cache-Control: public, max-age=5400` on successful GET responses, telling browsers and other downstream clients to cache a response for 5,400 seconds (90 minutes). The Nginx tile and COG statistics cache locations ignore that upstream header only when calculating their internal cache lifetime and use `proxy_cache_valid 200 24h` instead. Nginx still passes the original `Cache-Control` header to clients. Consequently, a browser caches a response for 90 minutes while Nginx can reuse the stored response for 24 hours without contacting TiTiler.
 
-The cache path also has `inactive=12h`. This is an eviction rule separate from the 12-hour freshness period: an entry that is not accessed for 12 hours can be deleted. Accessing an entry resets its inactivity timer, while the freshness period is measured from when the response was stored or last refreshed. Nginx may evict entries earlier when the combined tile and statistics cache approaches 21 GiB.
+The cache path also has `inactive=24h`. This is an eviction rule separate from the 24-hour freshness period: an entry that is not accessed for 24 hours can be deleted. Accessing an entry resets its inactivity timer, while the freshness period is measured from when the response was stored or last refreshed. Nginx may evict entries earlier when the combined tile and statistics cache approaches 21 GiB.
 
 The named volume persists across normal Nginx container restarts and recreations. Removing the `nginx-cache` volume, explicitly purging the cache, or losing the VM disk removes the cached responses.
 
-### VSI Cache Disabled
+### GDAL Cache Behavior
 
-`VSI_CACHE=FALSE` disables GDAL's generic per-file-handle in-memory byte-range cache for `/vsicurl/`, `/vsis3/`, and other VSI handlers. It was previously `TRUE` with `VSI_CACHE_SIZE=268435456` (256 MiB), but its benefit is limited in this architecture:
+`VSI_CACHE=FALSE` disables the generic per-file-handle byte-range cache. TiTiler opens and closes a dataset for each request, so that cache cannot provide cross-request reuse. `GDAL_CACHEMAX=1024` instead limits decoded blocks for datasets that are currently open; it is a ceiling, not a startup allocation, and those blocks are released when their dataset closes.
 
-- **Within a single request**: Each tile request opens the COG, reads metadata once (`rasterio.open()`), then reads tile data once (`dataset.read()`). No byte range is read twice.
-- **Across requests**: Each request opens a fresh dataset and closes it when done, destroying the file handle and its VSI cache. The next request starts with an empty cache.
-
-Keeping it disabled avoids up to 256 MiB of cache capacity per open handle. It does not disable the separate process-global `/vsicurl/` downloaded-range cache described below.
-
-### How `GDAL_CACHEMAX` differs
-
-`GDAL_CACHEMAX=1024` sets the process-wide ceiling for **decoded raster blocks** belonging to currently open datasets. It can avoid repeated reads and decoding while an operation keeps a dataset open, but closing the dataset releases that dataset's blocks. TiTiler opens its reader inside each request and closes it afterward, so these decoded blocks generally do not persist into a later request:
-
-```text
-Request 1: rasterio.open() -> read metadata -> read tile blocks A, B -> close and release blocks
-Request 2: rasterio.open() -> read metadata -> read tile blocks B, C -> close and release blocks
-```
-
-The block cache remains useful within requests that revisit blocks, and for concurrent datasets open in the same process. Its 1024 MiB setting is a ceiling rather than a startup allocation.
-
-The generic per-file `VSI_CACHE` remains disabled. Cross-request raw-range reuse instead comes from GDAL's separate process-global `/vsicurl/` cache, explicitly sized by `CPL_VSIL_CURL_CACHE_SIZE=200000000`. That cache can retain downloaded ranges after a file handle closes, until entries are evicted, the cache is explicitly cleared, or the worker exits.
+Production explicitly sets `CPL_VSIL_CURL_CACHE_SIZE=200000000` for GDAL's separate process-global `/vsicurl/` downloaded-range cache. This cache can reuse ranges after a file handle closes until entries are evicted or the worker exits. Development does not explicitly set its size.
 
 ### Memory Budget
 
@@ -237,102 +180,19 @@ The generic per-file `VSI_CACHE` remains disabled. Cross-request raw-range reuse
 6 backends * 1024 MiB GDAL_CACHEMAX = ~6 GiB decoded-block ceiling (not startup allocation)
 6 backends * 200,000,000-byte /vsicurl/ cache = ~1.12 GiB total
 No per-file VSI_CACHE overhead
+4 GiB hard memory limit per backend container
 32 GiB total RAM shared by GDAL cache, Python, Nginx, OS, request buffers, Azure Blob connections
 ```
 
+The development compose file uses the same 4 GiB per-backend memory limit and `GDAL_CACHEMAX=1024` setting as production, leaving container memory available for Python, native libraries, request buffers, and downloaded data outside GDAL's decoded-block cache.
+
 ## Request Routing
 
-### Cache Locality
+Nginx uses `hash $titiler_hash_key consistent`. The key is the `url` query parameter when present and otherwise the full request URI. Requests for one raster therefore usually reach the same backend, concentrating reusable production `/vsicurl/` ranges in one process.
 
-Consistent hashing routes the same raster URL to the same backend:
+This routing is best-effort. Nginx can spill a request to another backend after an upstream failure, improving availability at the cost of some cache duplication. A very hot raster can also make one backend CPU-bound; spreading such a raster across workers would improve CPU distribution but reduce cache locality.
 
-```text
-ortho_cog.tif tile 1 -> titiler-worker-4
-ortho_cog.tif tile 2 -> titiler-worker-4
-ortho_cog.tif tile 3 -> titiler-worker-4
-```
-
-This keeps each raster's reusable downloaded byte ranges in one backend's process-global `/vsicurl/` cache where possible, avoiding duplication across workers. Decoded `GDAL_CACHEMAX` blocks are still useful during a request but are released when that request's dataset closes.
-
-### Hot Raster Tradeoff
-
-If one raster receives most traffic, its backend can become CPU-bound. Cache locality improves, but CPU spreading is reduced. If this becomes a bottleneck, the hash key could include part of the tile coordinate — at the cost of cache locality.
-
-### Upstream Spillover
-
-Consistent hashing is best-effort, not hard pinning. If the selected backend returns a connection reset, timeout, or other upstream error, Nginx routes to another backend. This causes some cache duplication but keeps the service available.
-
-### Worker Count Rationale
-
-Six single-worker backends (not `uvicorn --workers 6`) reserve 2 of the 8 vCPUs for the OS, Nginx, and overhead, while keeping each backend addressable by Nginx for per-URL routing.
-
-### Monitoring and Traffic Observability
-
-The stack keeps two complementary observability paths:
-
-- Prometheus, node-exporter, and cAdvisor provide backend, VM, and container metrics. Removing them would break backend health and the infrastructure dashboard.
-- Alloy and Loki provide exact Nginx request events. Removing them would break the client-facing traffic, delivery-source, status, latency, and endpoint panels.
-- Grafana presents both data sources. These services overlap in presentation, not in what they measure.
-
-| Service | Internal port | Public access |
-| ------- | ------------- | ------------- |
-| Prometheus | `9090` | None; Docker network only. |
-| node-exporter | `9100` | None; Docker network only. |
-| cAdvisor | `8080` | None; Docker network only. |
-| Loki | `3100` | None; Docker network only. |
-| Grafana | `3000` | `https://titiler.strayos.com/grafana/` through nginx. |
-
-- **Prometheus** scrapes metrics from the TiTiler backends using `dockerfiles/prometheus.yml`.
-- **Alloy** discovers only the `nginx` container through the read-only Docker socket and forwards its logs to Loki. Its persisted positions live in `alloy-data`.
-- **Loki** stores the Nginx client-traffic events for 7 days using the single-binary filesystem configuration in `dockerfiles/loki/loki-config.yml`.
-- **Grafana** is pre-provisioned with Prometheus and Loki datasources and the `TiTiler API Traffic & Performance` and `TiTiler Infrastructure & Containers` dashboards from `dockerfiles/grafana/`.
-- `API Requests Served`, `API Requests/sec`, `Requests By Status Code`, `Request Latency (Nginx)`, `Top Endpoints`, and `Client IPs (Selected Time Range)` are computed from Nginx events in Loki. They represent client-visible HTTPS TiTiler API responses and include both cached and backend-served responses.
-- `Client IPs (Selected Time Range)` lists every requester IP returned within Loki's query-series limits for the selected Grafana time range and sorts the table by request count without applying a top-N filter. The query parses `client_ip` from the JSON event at read time instead of indexing it as a persistent label. To limit repeated long-range log scans, the provisioned traffic dashboard refreshes every 5 minutes.
-- `Cached Requests Served` includes Nginx `HIT`, `STALE`, `UPDATING`, and `REVALIDATED` responses.
-- `Backend Requests Served` includes responses obtained from an upstream on `MISS`, `BYPASS`, or `EXPIRED`, plus uncached API locations that contacted an upstream.
-- The dashboard intentionally shows dedicated delivery totals only for cached and backend-served responses. Rare responses generated directly by Nginx remain included in `API Requests Served` and the status-code panel but do not have a separate summary panel.
-- Nginx normalizes high-cardinality tile coordinates into endpoint templates before logging. Unknown paths are grouped as `other_api`; raw request URIs are not used as Loki labels.
-- Starlette metrics remain available as backend diagnostics. They measure work that reached TiTiler and can be lower than Nginx request totals when Nginx serves cache hits.
-- `node-exporter` covers VM CPU, memory, and filesystem metrics.
-- `cAdvisor` covers container CPU, memory, network, and filesystem usage.
-- Prometheus is force-recreated during deployment because it does not automatically reload changes to the bind-mounted `prometheus.yml` file.
-- Production does not publish host ports `3000`, `3100`, or `9090`; users reach Grafana only through nginx.
-- Grafana is configured for sub-path serving with `GF_SERVER_ROOT_URL=https://titiler.strayos.com/grafana/` and `GF_SERVER_SERVE_FROM_SUB_PATH=true`.
-- Anonymous access is disabled by default. Set `GRAFANA_ANONYMOUS_ENABLED=true` in `~/strayos-titiler/.env` for a public view-only dashboard, and set `GRAFANA_ADMIN_PASSWORD` there to avoid the default fallback password.
-
-#### Local observability validation (2026-07-14)
-
-- The development compose stack uses `dockerfiles/nginx-strayos-dev.conf`, publishes only port 80, and does not mount or require production TLS certificates. Production continues to use `dockerfiles/nginx-strayos.conf` with HTTPS.
-- A cold tile request logged `delivery_source=backend` and `cache_status=MISS`; the identical follow-up logged `delivery_source=cache` and `cache_status=HIT`.
-- Loki returned an exact total of 3 for an initial sequence of two tile requests and one validation request, split into 1 cached and 2 backend-served responses. Status, latency, and normalized endpoint queries all returned successfully.
-- A 500-request cached-tile smoke test at concurrency 32 returned 500 HTTP 200 responses in 1.488 seconds (336.1 requests/second from the local container client). The Loki tile total increased exactly from 2 to 502. The run itself split into 32 backend and 468 cached responses because its `nginx` test hostname created a cold cache key for the first concurrent wave.
-- This confirms event accounting and ingestion under a short burst. It is not an enabled-versus-disabled production performance benchmark, so production CPU, disk growth, and latency should still be watched after rollout.
-
-## Checking Routing Stickiness
-
-Collect logs on the VM:
-
-```bash
-mkdir -p titiler-log-dump
-
-docker compose -f docker-compose-strayos-deploy.yml ps > titiler-log-dump/compose-ps.txt 2>&1
-
-docker inspect -f '{{.Name}} {{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
-  nginx titiler-worker-1 titiler-worker-2 titiler-worker-3 titiler-worker-4 titiler-worker-5 titiler-worker-6 \
-  > titiler-log-dump/container-ips.txt 2>&1
-
-docker logs --timestamps nginx > titiler-log-dump/nginx.log 2>&1
-docker logs --timestamps titiler-worker-1 > titiler-log-dump/titiler-worker-1.log 2>&1
-docker logs --timestamps titiler-worker-2 > titiler-log-dump/titiler-worker-2.log 2>&1
-docker logs --timestamps titiler-worker-3 > titiler-log-dump/titiler-worker-3.log 2>&1
-docker logs --timestamps titiler-worker-4 > titiler-log-dump/titiler-worker-4.log 2>&1
-docker logs --timestamps titiler-worker-5 > titiler-log-dump/titiler-worker-5.log 2>&1
-docker logs --timestamps titiler-worker-6 > titiler-log-dump/titiler-worker-6.log 2>&1
-
-tar -czf titiler-log-dump.tar.gz titiler-log-dump
-```
-
-Redact signed tokens from URLs before sharing logs. For stronger proof, add an Nginx log format that includes `$upstream_addr`, `$arg_url`, and `$titiler_hash_key`.
+Six independently addressable, single-worker containers make per-raster routing possible and leave two of the VM's eight vCPUs for Nginx, the OS, and supporting services.
 
 ## Sources
 

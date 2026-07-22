@@ -61,6 +61,17 @@ async def fetch_validate(
         return await response.json()
 
 
+async def fetch_statistics(
+    session: aiohttp.ClientSession, endpoint: str, raster_path: str
+) -> dict[str, Any]:
+    """Fetch the COG statistics response from the titiler endpoint."""
+    url = f"{endpoint}/cog/statistics?url={raster_path}"
+    async with session.get(url) as response:
+        if response.status != 200:
+            raise Exception(f"Failed to fetch statistics: {response.status}")
+        return await response.json()
+
+
 async def fetch_tilejson(
     session: aiohttp.ClientSession, endpoint: str, raster_path: str
 ) -> dict[str, Any]:
@@ -247,7 +258,7 @@ async def main(
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
         ) as session:
-            # Fetch tilejson and validate info
+            # Fetch tilejson, validation, and statistics responses.
             print(f"Fetching tilejson for {raster_name}")
             tilejson = await async_retry(
                 lambda: fetch_tilejson(session, endpoint, raster_path)
@@ -263,17 +274,26 @@ async def main(
                 lambda: fetch_validate(session, endpoint, raster_path)
             )
 
+            print(f"Fetching statistics for {raster_name}")
+            statistics = await async_retry(
+                lambda: fetch_statistics(session, endpoint, raster_path)
+            )
+
             # Save JSON responses to output directory
             output_path = Path(__file__).resolve().parent / output_dir
             output_path.mkdir(exist_ok=True)
             tilejson_path = output_path / f"tilejson_{Path(raster_name).stem}.json"
             validate_path = output_path / f"validate_{Path(raster_name).stem}.json"
+            statistics_path = output_path / f"statistics_{Path(raster_name).stem}.json"
             with open(tilejson_path, "w") as f:
                 json.dump(tilejson, f, indent=2)
             with open(validate_path, "w") as f:
                 json.dump(validate, f, indent=2)
+            with open(statistics_path, "w") as f:
+                json.dump(statistics, f, indent=2)
             print(f"TileJSON saved to {tilejson_path}")
             print(f"Validate JSON saved to {validate_path}")
+            print(f"Statistics JSON saved to {statistics_path}")
 
             # Calculate tile combinations
             print("Calculating tile combinations")
