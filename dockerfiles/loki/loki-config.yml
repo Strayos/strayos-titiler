@@ -25,6 +25,7 @@ schema_config:
         period: 24h
 
 limits_config:
+  max_query_series: 10000
   retention_period: 168h
 
 compactor:
