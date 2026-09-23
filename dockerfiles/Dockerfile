@@ -1,6 +1,4 @@
-ARG PYTHON_VERSION=3.14
-
-FROM python:${PYTHON_VERSION}
+FROM python:3.14.7-trixie@sha256:0876e54cf728d89fd9d0fdaf5837b9ee879ea5fbbd6fd0cddbe5eb0cce3f5f9e
 RUN apt update && apt upgrade -y \
   && apt install curl -y \
   && rm -rf /var/lib/apt/lists/*
