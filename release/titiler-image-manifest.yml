@@ -1,0 +1,27 @@
+schema: 1
+component: titiler
+status: validation-artifact
+source:
+  repository: strayos-titiler
+  base_commit: 8758cd1
+  working_tree_changes: true
+  lockfile_sha256: 93f92253f7253c706de8ce1dad5f86b0660f3384f19856a91cb72972bc726cea
+image:
+  local_reference: strayos-titiler:locked-production
+  local_digest: sha256:09a4e81e6b96ea5b4b450f0d37e62911ea618fa7f0912b2f7c3940a23a154156
+  architecture: linux/amd64
+  runtime_python: 3.14.7
+base_images:
+  python: docker.io/library/python:3.14.7-trixie@sha256:0876e54cf728d89fd9d0fdaf5837b9ee879ea5fbbd6fd0cddbe5eb0cce3f5f9e
+  uv: ghcr.io/astral-sh/uv:0.12.17@sha256:10787c682e4184e4f290de1171fd4703dc63de99221f10fe1c99002ce7fa9acc
+dependencies:
+  resolver: uv
+  lockfile: uv.lock
+  production_packages: 79
+validation:
+  docker_build: passed
+  dockerfile_check: passed_with_existing_json_cmd_warning
+  titiler_import: passed
+  core_tests: 18_passed
+  application_tests: 2_passed
+  sbom: not_generated_docker_cli_tooling_unavailable

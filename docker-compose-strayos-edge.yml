@@ -1,0 +1,118 @@
+x-titiler-common: &titiler-common
+  image: "${TITILER_IMAGE:-strayos1/strayos-titiler:app}"
+  expose:
+    - "8000"
+  mem_limit: "${TITILER_WORKER_MEMORY_LIMIT:-4g}"
+  command: ["uvicorn", "titiler.application.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--forwarded-allow-ips=*"]
+  environment:
+    - CPL_TMPDIR=/tmp
+    - GDAL_CACHEMAX=1024
+    - GDAL_INGESTED_BYTES_AT_OPEN=32768
+    - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
+    - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
+    - GDAL_HTTP_MULTIPLEX=YES
+    - GDAL_HTTP_VERSION=2
+    - CPL_VSIL_CURL_CACHE_SIZE=200000000
+    - PYTHONWARNINGS=ignore
+    - VSI_CACHE=FALSE
+    - AWS_S3_ENDPOINT=${TITILER_MINIO_ENDPOINT:?Set TITILER_MINIO_ENDPOINT to the storage-node host:port}
+    - AWS_HTTPS=${TITILER_MINIO_HTTPS:?Set TITILER_MINIO_HTTPS=YES}
+    - AWS_CA_BUNDLE=${TITILER_MINIO_CA_BUNDLE:?Set TITILER_MINIO_CA_BUNDLE to the mounted CA path}
+    - CURL_CA_BUNDLE=${TITILER_MINIO_CA_BUNDLE:?Set TITILER_MINIO_CA_BUNDLE to the mounted CA path}
+    - GDAL_HTTP_CAINFO=${TITILER_MINIO_CA_BUNDLE:?Set TITILER_MINIO_CA_BUNDLE to the mounted CA path}
+    - GDAL_CURL_CA_BUNDLE=${TITILER_MINIO_CA_BUNDLE:?Set TITILER_MINIO_CA_BUNDLE to the mounted CA path}
+    - CPL_CURL_CA_BUNDLE=${TITILER_MINIO_CA_BUNDLE:?Set TITILER_MINIO_CA_BUNDLE to the mounted CA path}
+    - AWS_VIRTUAL_HOSTING=FALSE
+    - AWS_REGION=${TITILER_MINIO_REGION:-us-east-1}
+    - AWS_DEFAULT_REGION=${TITILER_MINIO_REGION:-us-east-1}
+    - TITILER_API_LOCAL_MINIO_ONLY=true
+    - TITILER_API_MINIO_ENDPOINT=${TITILER_MINIO_ENDPOINT:?Set TITILER_MINIO_ENDPOINT to the storage-node host:port}
+    - TITILER_API_MINIO_BUCKETS=${TITILER_MINIO_BUCKETS:-uploads,output}
+  entrypoint:
+    - /bin/sh
+    - -ec
+    - |
+      if [ "$${AWS_HTTPS}" != "YES" ]; then
+        echo "TITILER_MINIO_HTTPS must be YES for Edge MinIO access" >&2
+        exit 1
+      fi
+      if [ "$${AWS_CA_BUNDLE}" != "/etc/ssl/certs/hanka-minio-ca.pem" ] || [ "$${CURL_CA_BUNDLE}" != "$${AWS_CA_BUNDLE}" ] || [ "$${GDAL_HTTP_CAINFO}" != "$${AWS_CA_BUNDLE}" ] || [ "$${GDAL_CURL_CA_BUNDLE}" != "$${AWS_CA_BUNDLE}" ] || [ "$${CPL_CURL_CA_BUNDLE}" != "$${AWS_CA_BUNDLE}" ] || [ ! -s "$${AWS_CA_BUNDLE}" ]; then
+        echo "Edge MinIO CA bundle must be the mounted Hanka CA certificate" >&2
+        exit 1
+      fi
+      export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/minio-titiler-access-key)"
+      export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/minio-titiler-secret-key)"
+      exec "$${@}"
+    - --
+  secrets:
+    - minio-titiler-access-key
+    - minio-titiler-secret-key
+  volumes:
+    - "${TITILER_DATA_PATH:-.}:/data:ro"
+    - "${TITILER_MINIO_CA_FILE:?Set TITILER_MINIO_CA_FILE to the host CA certificate}:/etc/ssl/certs/hanka-minio-ca.pem:ro"
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 10s
+  logging:
+    driver: local
+    options:
+      max-size: "50m"
+      max-file: "3"
+  networks:
+    - titiler-internal
+
+services:
+  titiler-1:
+    <<: *titiler-common
+
+  titiler-2:
+    <<: *titiler-common
+
+  nginx:
+    image: nginx:1.29.1@sha256:8adbdcb969e2676478ee2c7ad333956f0c8e0e4c5a7463f4611d7a2e7a7ff5dc
+    labels:
+      com.strayos.stack: edge
+    volumes:
+      - ./dockerfiles/nginx-strayos-edge.conf:/etc/nginx/nginx.conf:ro
+      - nginx-cache:/var/cache/nginx
+    depends_on:
+      titiler-1:
+        condition: service_healthy
+      titiler-2:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: local
+      options:
+        max-size: "50m"
+        max-file: "3"
+    networks:
+      titiler-internal:
+      strayos-edge:
+        aliases:
+          - titiler
+
+networks:
+  titiler-internal:
+    driver: bridge
+  strayos-edge:
+    external: true
+
+volumes:
+  nginx-cache:
+
+secrets:
+  minio-titiler-access-key:
+    file: ${TITILER_MINIO_CONFIG_DIR:?Set TITILER_MINIO_CONFIG_DIR}/titiler-access-key
+  minio-titiler-secret-key:
+    file: ${TITILER_MINIO_CONFIG_DIR:?Set TITILER_MINIO_CONFIG_DIR}/titiler-secret-key

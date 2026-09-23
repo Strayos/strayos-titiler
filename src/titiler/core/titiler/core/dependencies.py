@@ -5,6 +5,7 @@ import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 import numpy
 from fastapi import HTTPException, Query
@@ -66,6 +67,42 @@ ColorMapParams = create_colormap_dependency(default_cmap)
 def DatasetPathParams(url: Annotated[str, Query(description="Dataset URL")]) -> str:
     """Create dataset path from args"""
     return url
+
+
+def create_local_minio_path_dependency(allowed_buckets: set[str]) -> Callable:
+    """Allow only approved S3 paths resolved through the configured MinIO endpoint."""
+
+    def local_minio_path(
+        url: Annotated[str, Query(description="Local MinIO dataset path")],
+    ) -> str:
+        """Validate that a dataset is an object in an approved local bucket."""
+        try:
+            parsed = urlsplit(url)
+            bucket = parsed.hostname
+            key = parsed.path.lstrip("/")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Only approved local MinIO s3:// bucket paths are allowed.",
+            ) from exc
+
+        if (
+            parsed.scheme != "s3"
+            or parsed.netloc != bucket
+            or not bucket
+            or bucket not in allowed_buckets
+            or not key
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Only approved local MinIO s3:// bucket paths are allowed.",
+            )
+
+        return url
+
+    return local_minio_path
 
 
 @dataclass

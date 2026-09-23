@@ -31,6 +31,10 @@ from titiler.core.factory import (
     TilerFactory,
     TMSFactory,
 )
+from titiler.core.dependencies import (
+    DatasetPathParams,
+    create_local_minio_path_dependency,
+)
 from titiler.core.middleware import (
     CacheControlMiddleware,
     LoggerMiddleware,
@@ -59,6 +63,15 @@ logging.getLogger("rasterio.session").setLevel(logging.ERROR)
 logging.getLogger("rio-tiler").setLevel(logging.ERROR)
 
 api_settings = ApiSettings()
+local_minio_path = DatasetPathParams
+if api_settings.local_minio_only:
+    local_minio_path = create_local_minio_path_dependency(
+        {
+            bucket.strip()
+            for bucket in api_settings.minio_buckets.split(",")
+            if bucket.strip()
+        }
+    )
 
 # custom template directory
 templates_location: list[jinja2.BaseLoader] = (
@@ -142,6 +155,7 @@ if not api_settings.disable_cog:
         ],
         enable_telemetry=api_settings.telemetry_enabled,
         templates=titiler_templates,
+        path_dependency=local_minio_path,
     )
 
     app.include_router(

@@ -1,6 +1,9 @@
 """Test titiler.application.main.app."""
 
 from rio_tiler import __version__ as rio_tiler_version
+import pytest
+
+from titiler.application.settings import ApiSettings
 
 
 def test_health(app):
@@ -23,3 +26,12 @@ def test_health(app):
 
     response = app.get("/api.html")
     assert response.status_code == 200
+
+
+def test_local_minio_mode_requires_endpoint(monkeypatch):
+    """Hanka mode fails closed without an explicit storage endpoint."""
+    monkeypatch.setenv("TITILER_API_LOCAL_MINIO_ONLY", "true")
+    monkeypatch.delenv("TITILER_API_MINIO_ENDPOINT", raising=False)
+
+    with pytest.raises(ValueError, match="TITILER_API_MINIO_ENDPOINT"):
+        ApiSettings()

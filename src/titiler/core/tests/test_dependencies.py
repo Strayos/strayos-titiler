@@ -48,6 +48,30 @@ def test_tms():
     assert response.json() == "WorldCRS84Quad"
 
 
+@pytest.mark.parametrize(
+    "url, expected_status",
+    [
+        ("s3://uploads/input.tif", 200),
+        ("s3://output/result.tif", 200),
+        ("https://example.com/input.tif", 400),
+        ("file:///etc/passwd", 400),
+        ("s3://unapproved/input.tif", 400),
+        ("s3://uploads/input.tif?redirect=https://example.com", 400),
+    ],
+)
+def test_local_minio_path_dependency(url, expected_status):
+    """Only approved local MinIO object paths are accepted."""
+    app = FastAPI()
+    dependency = dependencies.create_local_minio_path_dependency({"uploads", "output"})
+
+    @app.get("/")
+    def main(path=Depends(dependency)):
+        return path
+
+    response = TestClient(app).get("/", params={"url": url})
+    assert response.status_code == expected_status
+
+
 def test_cmap():
     """Create App."""
     app = FastAPI()

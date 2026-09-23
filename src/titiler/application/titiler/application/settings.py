@@ -1,6 +1,6 @@
 """Titiler API settings."""
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +40,9 @@ class ApiSettings(BaseSettings):
 
     # an API key required to access any endpoint, passed via the ?access_token= query parameter
     global_access_token: str | None = None
+    local_minio_only: bool = False
+    minio_endpoint: str | None = None
+    minio_buckets: str = "uploads,output"
 
     model_config = SettingsConfigDict(
         env_prefix="TITILER_API_", env_file=".env", extra="ignore"
@@ -54,3 +57,12 @@ class ApiSettings(BaseSettings):
     def parse_cors_allow_methods(cls, v):
         """Parse CORS allowed methods."""
         return [method.strip().upper() for method in v.split(",")]
+
+    @model_validator(mode="after")
+    def require_local_minio_endpoint(self):
+        """Require storage configuration when local-only mode is enabled."""
+        if self.local_minio_only and not self.minio_endpoint:
+            raise ValueError(
+                "TITILER_API_MINIO_ENDPOINT is required in local MinIO mode"
+            )
+        return self

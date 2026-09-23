@@ -1,22 +1,15 @@
-FROM python:3.14.7-trixie@sha256:0876e54cf728d89fd9d0fdaf5837b9ee879ea5fbbd6fd0cddbe5eb0cce3f5f9e
-RUN apt update && apt upgrade -y \
-  && apt install curl -y \
-  && rm -rf /var/lib/apt/lists/*
+FROM ghcr.io/astral-sh/uv:0.12.17@sha256:10787c682e4184e4f290de1171fd4703dc63de99221f10fe1c99002ce7fa9acc AS uv
 
-# Ensure root certificates are always updated at evey container build
-# and curl is using the latest version of them
-RUN mkdir /usr/local/share/ca-certificates/cacert.org
-RUN cd /usr/local/share/ca-certificates/cacert.org && curl -k -O https://www.cacert.org/certs/root.crt
-RUN cd /usr/local/share/ca-certificates/cacert.org && curl -k -O https://www.cacert.org/certs/class3.crt
-RUN update-ca-certificates
+FROM docker.io/library/python:3.14.7-trixie@sha256:0876e54cf728d89fd9d0fdaf5837b9ee879ea5fbbd6fd0cddbe5eb0cce3f5f9e
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+WORKDIR /tmp/titiler-build
+COPY pyproject.toml uv.lock ./
+COPY src/titiler/ src/titiler/
+RUN UV_PROJECT_ENVIRONMENT=/opt/titiler-venv uv sync --frozen --package titiler-application --extra server --no-dev --no-default-groups --no-editable --compile-bytecode \
+  && rm -rf /tmp/titiler-build /usr/local/bin/uv /usr/local/bin/uvx
+ENV PATH=/opt/titiler-venv/bin:$PATH
 ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
-
-RUN python -m pip install -U pip
-RUN python -m pip install uvicorn uvicorn-worker gunicorn
-
-COPY src/titiler/ /tmp/titiler/
-RUN python -m pip install /tmp/titiler/core /tmp/titiler/extensions["cogeo,stac"] /tmp/titiler/mosaic /tmp/titiler/application --no-cache-dir --upgrade
-RUN rm -rf /tmp/titiler
 
 ###################################################
 # For compatibility (might be removed at one point)

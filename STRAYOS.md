@@ -13,6 +13,73 @@ This application is normally deployed as a container. When another application o
 * Start the Strayos TiTiler stack with `docker-compose-strayos-dev.yml` when you want to run code from this project instead of an installed package. Development Nginx uses `dockerfiles/nginx-strayos-dev.conf` and serves HTTP on `http://localhost` without requiring the production TLS certificates.
 * Production deploys use `docker-compose-strayos-deploy.yml`, with the image supplied through `TITILER_IMAGE` and defaulting to `strayos1/strayos-titiler:app`.
 
+## On-Prem Edge Deployment
+
+`docker-compose-strayos-edge.yml` is an independent on-prem deployment with two TiTiler containers and one Uvicorn worker per container. It is not used by the Bitbucket pipeline and does not replace or extend either Strayos development or production compose file. Its Nginx configuration is edge-only so changing the edge worker count cannot alter the six-worker production stack.
+
+The edge stack serves HTTP and is intended to run behind an on-prem TLS reverse proxy when HTTPS is required. Edge Nginx joins the external `strayos-edge` network under the `titiler` alias so separately managed control-node Compose projects can reach it at `http://titiler:80`. The TiTiler workers remain on a private network. MinIO runs on a separate physical host and is reached through its fixed LAN endpoint, not through Docker networking.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TITILER_IMAGE` | `strayos1/strayos-titiler:app` | TiTiler image from Docker Hub, an internal registry, or a locally loaded tag. |
+| `TITILER_DATA_PATH` | `.` | Host directory mounted read-only at `/data` in both TiTiler workers. |
+| `TITILER_WORKER_MEMORY_LIMIT` | `4g` | Hard memory limit for each TiTiler container. |
+| `TITILER_MINIO_ENDPOINT` | Required | Storage-node MinIO endpoint; Hanka uses `minio.hanka.internal:9000` without a URL scheme. |
+| `TITILER_MINIO_HTTPS` | `YES` | HTTPS is required for the Hanka storage-node connection. |
+| `TITILER_MINIO_CA_BUNDLE` | `/etc/ssl/certs/hanka-minio-ca.pem` | CA bundle path inside the TiTiler workers. |
+| `TITILER_MINIO_REGION` | `us-east-1` | S3 region supplied to GDAL. |
+| `TITILER_MINIO_CONFIG_DIR` | Required | Protected host directory containing `titiler-access-key` and `titiler-secret-key`. |
+The Nginx image is pinned to a multi-architecture manifest digest. The TiTiler
+worker image is supplied through `TITILER_IMAGE`.
+
+Edge workers fail before Uvicorn starts unless MinIO HTTPS is enabled and the
+AWS, libcurl, and GDAL CA variables use the mounted Hanka CA bundle. TLS
+certificate hostname validation remains a runtime check against the configured
+MinIO endpoint.
+
+Create the shared control-node network once. Other control-node Compose projects
+must reuse its exact name:
+
+```bash
+docker network inspect strayos-edge >/dev/null 2>&1 || docker network create strayos-edge
+```
+
+TiTiler reads private objects with the dedicated read-only identity provisioned by `strayos-at-edge/minio-object-storage`. Set its endpoint, HTTPS, CA bundle, CA file, and protected credential directory before rendering or starting the stack:
+
+```bash
+export TITILER_MINIO_ENDPOINT=minio.hanka.internal:9000
+export TITILER_MINIO_HTTPS=YES
+export TITILER_MINIO_CA_BUNDLE=/etc/ssl/certs/hanka-minio-ca.pem
+export TITILER_MINIO_CA_FILE=/opt/strayos/config/minio/ca.pem
+export TITILER_MINIO_CONFIG_DIR=/opt/strayos/config/minio
+```
+
+Use a fixed Compose project name so the containers and named volumes stay isolated and predictable:
+
+```bash
+docker compose -p strayos-titiler-edge -f docker-compose-strayos-edge.yml config
+docker compose -p strayos-titiler-edge -f docker-compose-strayos-edge.yml pull
+docker compose -p strayos-titiler-edge -f docker-compose-strayos-edge.yml up -d --wait
+```
+
+A local MinIO COG can be addressed through GDAL's S3 virtual filesystem, for example `s3://uploads/path/to/raster.tif`. The TiTiler identity can list and read objects in `uploads` and `output` but cannot create, replace, or delete them.
+
+The same-workstation integration test used the canonical `dsm_cog.tif` with fresh isolated MinIO storage. A valid PNG preview passed through Edge Nginx over HTTPS using the mounted Hanka CA, and the dedicated identity listed/read `uploads` and `output` while writes, deletes, other-bucket access, bucket creation, and admin operations were denied. This does not validate the final storage-node LAN address, outage recovery, or site acceptance.
+
+Inspect or stop only this stack with:
+
+```bash
+docker compose -p strayos-titiler-edge -f docker-compose-strayos-edge.yml ps
+docker compose -p strayos-titiler-edge -f docker-compose-strayos-edge.yml logs
+docker compose -p strayos-titiler-edge -f docker-compose-strayos-edge.yml down
+```
+
+Do not add `--volumes` to the normal `down` command; the named volume retains
+the edge Nginx cache. The two workers have a combined 2 GiB `GDAL_CACHEMAX`
+ceiling and approximately 382 MiB of process-wide `/vsicurl/` cache, in
+addition to Python, native-library, and request memory. Their combined
+container memory limit is 8 GiB by default.
+
 ## Stress Testing
 
 * Activate the repository virtual environment before running a test: `source .venv/bin/activate`.
