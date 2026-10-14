@@ -220,11 +220,11 @@ Most production variables tune Rasterio/GDAL access to remote raster data rather
 
 ### Nginx Response Cache
 
-Nginx uses the persistent `nginx-cache` volume for a shared 21 GiB cache. It caches tiles and successful `GET`/`HEAD` requests to `/cog/statistics` and `/cog/validate` (including COG validation responses with `"COG": false`); STAC statistics and GeoJSON `POST /cog/statistics` are not cached. All three Nginx configurations use the same 24-hour successful-response TTL and cache lock for COG validation. Cache keys include the scheme, host, path, and query string, so different raster URLs or validation options remain separate. Failed HTTP responses are not cached.
+Nginx uses the persistent `nginx-cache` volume for a shared 21 GiB cache. It caches tiles and successful `GET`/`HEAD` requests to `/cog/statistics` and `/cog/validate` (including COG validation responses with `"COG": false`); STAC statistics and GeoJSON `POST /cog/statistics` are not cached. All three Nginx configurations use the same 48-hour successful-response TTL and cache lock for COG validation. Cache keys include the scheme, host, path, and query string, so different raster URLs or validation options remain separate. Failed HTTP responses are not cached.
 
 Production, development, and Edge Nginx include `X-TiTiler-Cache` on responses for cache-enabled requests. It exposes Nginx's `$upstream_cache_status` (for example, `MISS` when fetched from the backend, `HIT` when served from the cache, or `STALE` when serving an expired entry). Nginx omits the header when there is no cache status, such as on non-cached endpoints. This diagnostic header does not change caching behavior and can be inspected in browser developer tools; `Cache-Control` alone does not identify a cache hit.
 
-Successful GET responses advertise a 90-minute browser lifetime through `Cache-Control`. Nginx preserves that client header but keeps successful cached responses for 24 hours. Entries inactive for 24 hours or displaced as the cache approaches 21 GiB may be removed earlier. The volume survives normal container recreation but not volume deletion, explicit purging, or disk loss.
+Successful GET responses advertise a 90-minute browser lifetime through `Cache-Control`. Nginx preserves that client header but keeps successful cached responses for 48 hours. Entries inactive for 48 hours or displaced as the cache approaches 21 GiB may be removed earlier. The volume survives normal container recreation but not volume deletion, explicit purging, or disk loss.
 
 ### GDAL Cache Behavior
 
