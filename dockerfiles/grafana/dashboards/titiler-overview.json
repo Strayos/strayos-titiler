@@ -625,7 +625,7 @@
         "type": "loki",
         "uid": "loki"
       },
-      "description": "Twenty slowest individual Nginx-completed API requests in the selected time range, ranked in Loki before returning results. Duration includes cache, upstream work and response transmission. Ties are retained as separate requests. Full URLs appear only for events logged after the URL field was enabled; query strings may include signed raster URLs. Only retained logs (7 days) are available; large ranges may exceed Loki's 10,000-series query limit.",
+      "description": "Twenty slowest individual Nginx-completed API requests with request_time strictly greater than 1 second in the selected time range. The duration filter runs before creating per-request series, reducing Loki query cardinality; fewer than 20 qualifying requests yield fewer rows. Duration includes cache, upstream work and response transmission. Ties remain separate requests. Full URLs appear only for events logged after the URL field was enabled; query strings may include signed raster URLs. Only retained logs (7 days) are available; ranges with over 10,000 qualifying requests can still exceed Loki's series limit.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -696,12 +696,12 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "sort_desc(topk(20, max_over_time({service_name=\"nginx\"} | json traffic=\"traffic\", timestamp=\"timestamp\", client_ip=\"client_ip\", method=\"method\", endpoint=\"endpoint\", request_url=\"request_url\", status=\"status\", delivery_source=\"delivery_source\", request_time=\"request_time\" | traffic=\"api\" | label_format event_id=`{{ unixEpochNanos __timestamp__ }}:{{ __line__ }}` | unwrap request_time | __error__=\"\" [$__range]) by (event_id, timestamp, client_ip, method, endpoint, request_url, status, delivery_source)))",
+          "expr": "sort_desc(topk(20, max_over_time({service_name=\"nginx\"} | json traffic=\"traffic\", timestamp=\"timestamp\", client_ip=\"client_ip\", method=\"method\", endpoint=\"endpoint\", request_url=\"request_url\", status=\"status\", delivery_source=\"delivery_source\", request_time=\"request_time\" | traffic=\"api\" | request_time > 1 | label_format event_id=`{{ unixEpochNanos __timestamp__ }}:{{ __line__ }}` | unwrap request_time | __error__=\"\" [$__range]) by (event_id, timestamp, client_ip, method, endpoint, request_url, status, delivery_source)))",
           "queryType": "instant",
           "refId": "A"
         }
       ],
-      "title": "Top 20 Slowest Individual Requests",
+      "title": "Top 20 Slowest Requests (>1s)",
       "transformations": [
         {
           "id": "labelsToFields",
@@ -773,6 +773,6 @@
   "description": "Client-facing Nginx traffic, requester IPs, delivery source, status, latency, endpoints, and TiTiler backend health.",
   "title": "TiTiler API Traffic & Performance",
   "uid": "strayos-titiler-overview",
-  "version": 5,
+  "version": 6,
   "weekStart": ""
 }
