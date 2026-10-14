@@ -195,6 +195,8 @@ Nginx emits compact JSON for completed TiTiler API requests, which Alloy ships a
 
 Dashboard traffic totals include Nginx cache hits, while Starlette metrics include only backend work. Cached delivery includes `HIT`, `STALE`, `UPDATING`, and `REVALIDATED`; backend delivery includes `MISS`, `BYPASS`, `EXPIRED`, and uncached upstream requests. Client-IP panels support up to 10,000 result series per query, retaining a safety bound above Loki's default of 500.
 
+The **Top 10 Slowest Individual Requests** table ranks individual Nginx access events by client-facing `request_time` across the selected Grafana range. Its instant LogQL query constructs a temporary per-event key from the nanosecond Loki timestamp and log line, unwraps duration, and applies `topk(10)` in Loki before Grafana receives the rows. Grafana converts the returned labeled series into table rows, sorts by duration, and hides the temporary event key. Equal-duration requests remain separate, and the panel does not depend on Grafana's log-row retrieval limit. It displays the logged completion time, normalized endpoint, method, client IP, status, delivery source, and duration; full paths and raster query strings are not logged. The ranking covers only Loki's retained 7 days; sufficiently large or expensive ranges can return an explicit query error (including series/timeout limits), rather than a guaranteed result. The per-event key is created at query time and is not an indexed Loki label.
+
 Production exposes Grafana only through `/grafana/`; Prometheus and Loki remain internal. Anonymous Grafana access is disabled by default. Set `GRAFANA_ADMIN_PASSWORD` and, only when needed, `GRAFANA_ANONYMOUS_ENABLED=true` in the VM's `.env`.
 
 ### Production Environment Variables

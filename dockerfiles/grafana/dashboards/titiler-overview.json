@@ -619,6 +619,111 @@
       ],
       "title": "Client IPs (Selected Time Range)",
       "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Ten slowest individual Nginx-completed API requests in the selected time range, ranked in Loki before returning results. Duration is client-facing seconds (including cache, upstream work and transmission). Ties are retained as separate requests. Only retained logs (7 days) are available; very large ranges may fail the Loki query rather than return an incomplete ranking. Full URLs and raster query strings are not logged.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "id": 12,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "direction": "backward",
+          "editorMode": "code",
+          "expr": "sort_desc(topk(10, max_over_time({service_name=\"nginx\"} | json traffic=\"traffic\", timestamp=\"timestamp\", client_ip=\"client_ip\", method=\"method\", endpoint=\"endpoint\", status=\"status\", delivery_source=\"delivery_source\", request_time=\"request_time\" | traffic=\"api\" | label_format event_id=`{{ unixEpochNanos __timestamp__ }}:{{ __line__ }}` | unwrap request_time | __error__=\"\" [$__range]) by (event_id, timestamp, client_ip, method, endpoint, status, delivery_source)))",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ],
+      "title": "Top 10 Slowest Individual Requests",
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Value #A",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "event_id": true
+            },
+            "renameByName": {
+              "Value #A": "Duration",
+              "timestamp": "Completed",
+              "client_ip": "Client IP",
+              "method": "Method",
+              "endpoint": "Endpoint",
+              "status": "Status",
+              "delivery_source": "Delivery"
+            }
+          }
+        }
+      ],
+      "type": "table"
     }
   ],
   "refresh": "5m",
@@ -641,6 +746,6 @@
   "description": "Client-facing Nginx traffic, requester IPs, delivery source, status, latency, endpoints, and TiTiler backend health.",
   "title": "TiTiler API Traffic & Performance",
   "uid": "strayos-titiler-overview",
-  "version": 3,
+  "version": 4,
   "weekStart": ""
 }
