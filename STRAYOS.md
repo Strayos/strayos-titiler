@@ -220,7 +220,7 @@ Most production variables tune Rasterio/GDAL access to remote raster data rather
 
 ### Nginx Response Cache
 
-Nginx uses the persistent `nginx-cache` volume for a shared 21 GiB cache. It caches tiles and `GET`/`HEAD` requests to `/cog/statistics`; STAC statistics and GeoJSON `POST /cog/statistics` are not cached. Cache keys include the scheme, host, path, and query string, so different raster URLs or options remain separate.
+Nginx uses the persistent `nginx-cache` volume for a shared 21 GiB cache. It caches tiles and successful `GET`/`HEAD` requests to `/cog/statistics` and `/cog/validate` (including COG validation responses with `"COG": false`); STAC statistics and GeoJSON `POST /cog/statistics` are not cached. All three Nginx configurations use the same 24-hour successful-response TTL and cache lock for COG validation. Cache keys include the scheme, host, path, and query string, so different raster URLs or validation options remain separate. Failed HTTP responses are not cached.
 
 Successful GET responses advertise a 90-minute browser lifetime through `Cache-Control`. Nginx preserves that client header but keeps successful cached responses for 24 hours. Entries inactive for 24 hours or displaced as the cache approaches 21 GiB may be removed earlier. The volume survives normal container recreation but not volume deletion, explicit purging, or disk loss.
 
