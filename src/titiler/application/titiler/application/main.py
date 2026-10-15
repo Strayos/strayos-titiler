@@ -20,6 +20,7 @@ from starlette.templating import Jinja2Templates
 from starlette_cramjam.middleware import CompressionMiddleware
 
 from titiler.application import __version__ as titiler_version
+from titiler.application.middleware import CogTileDeadlineMiddleware
 from titiler.application.settings import ApiSettings
 
 from starlette_exporter import PrometheusMiddleware, handle_metrics
@@ -347,6 +348,8 @@ if api_settings.debug:
 
 if api_settings.lower_case_query_parameters:
     app.add_middleware(LowerCaseQueryStringMiddleware)
+
+app.add_middleware(CogTileDeadlineMiddleware, timeout=120)
 
 
 @app.get(

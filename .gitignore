@@ -115,3 +115,6 @@ scratch/
 
 # Generated stress-test reports and artifacts
 stress-test/output_*/
+
+#RCA
+RCA/
