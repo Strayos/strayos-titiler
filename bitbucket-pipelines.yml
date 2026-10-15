@@ -35,10 +35,10 @@ definitions:
         concurrency-group: titiler-app-deploy
         script:
           # Install Azure CLI
-          - apt-get update && apt-get install -y curl rsync
-          - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+          - &install-deploy-tools apt-get update && apt-get install -y curl rsync
+          - &install-azure-cli curl -sL https://aka.ms/InstallAzureCLIDeb | bash
           # Login to Azure
-          - |
+          - &azure-login |
             case "$-" in
               *x*) XTRACE_WAS_ON=1 ;;
               *) XTRACE_WAS_ON=0 ;;
@@ -46,14 +46,16 @@ definitions:
             set +x
             az login --service-principal -u "$DEPLOY_AZURE_ID" -p "$DEPLOY_AZURE_PASS" --tenant "$AZURE_TENANT_ID" --output none
             if [ "$XTRACE_WAS_ON" = "1" ]; then set -x; fi
-          - az account set --subscription $AZURE_SUBSCRIPTION_ID
-          - |
+          - &select-azure-subscription az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          - &deploy-vm |
             set -e
 
             IMAGE_NAME="strayos-titiler"
             TAG="app"
             IMAGE_REPO="${DOCKER_HUB_USER}/${IMAGE_NAME}"
             TITILER_IMAGE="${IMAGE_REPO}:${TAG}"
+            COMPOSE_FILE="${DEPLOY_COMPOSE_FILE:-docker-compose-strayos-deploy.yml}"
+            WORKER_COUNT="${DEPLOY_WORKER_COUNT:-6}"
 
             if [ -z "$DOCKER_HUB_USER" ]; then
               echo "ERROR: DOCKER_HUB_USER is empty"
@@ -72,9 +74,9 @@ definitions:
             fi
 
             RULE_PRIORITY="250"
-            RESOURCE_GROUP="TiTiler"
-            NSG_NAME="app-titiler-nsg"
-            DESTINATION_IP_PRIVATE="10.9.0.4"
+            RESOURCE_GROUP="${DEPLOY_RESOURCE_GROUP:-TiTiler}"
+            NSG_NAME="${DEPLOY_NSG_NAME:-app-titiler-nsg}"
+            DESTINATION_IP_PRIVATE="${DEPLOY_PRIVATE_IP:-10.9.0.4}"
             DESTINATION_PORT="22"
             RULE_NAME="titiler_$(echo "${BITBUCKET_BRANCH}" | tr '/\\' '_')_deploy"
             NSG_RULE_CREATED=0
@@ -122,21 +124,47 @@ definitions:
               set -e
               cd strayos-titiler
               export TITILER_IMAGE='${TITILER_IMAGE}'
-              docker compose -f docker-compose-strayos-deploy.yml pull
+              docker compose -f '${COMPOSE_FILE}' pull
               # Prometheus does not automatically reload its bind-mounted config.
-              docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate prometheus
-              docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate loki alloy
-              docker compose -f docker-compose-strayos-deploy.yml up -d --wait node-exporter cadvisor grafana
-              for i in 1 2 3 4 5 6; do
-                docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate titiler-\$i
+              docker compose -f '${COMPOSE_FILE}' up -d --wait --force-recreate prometheus
+              docker compose -f '${COMPOSE_FILE}' up -d --wait --force-recreate loki alloy
+              docker compose -f '${COMPOSE_FILE}' up -d --wait node-exporter cadvisor grafana
+              for i in \$(seq 1 '${WORKER_COUNT}'); do
+                docker compose -f '${COMPOSE_FILE}' up -d --wait --force-recreate titiler-\$i
                 sleep 3
               done
               # Recreate Nginx so its file bind mount follows the config inode replaced by rsync.
-              docker compose -f docker-compose-strayos-deploy.yml up -d --wait --force-recreate nginx
+              docker compose -f '${COMPOSE_FILE}' up -d --wait --force-recreate nginx
               docker system prune -af --filter until=24h
             "
+
+    - step: &deploy-odp
+        name: Deploy Changes to ODP VM
+        deployment: ODP
+        concurrency-group: titiler-odp-deploy
+        script:
+          - |
+            set -e
+            : "${ODP_TITILER_SERVER:?Set ODP_TITILER_SERVER}"
+            : "${ODP_TITILER_SSH_USER:?Set ODP_TITILER_SSH_USER}"
+            : "${SSH_KEY_B64:?Set SSH_KEY_B64}"
+
+            export TITILER_SERVER="$ODP_TITILER_SERVER"
+            export TITILER_SSH_USER="$ODP_TITILER_SSH_USER"
+            export DEPLOY_RESOURCE_GROUP="${TITILER_ODP_RESOURCE_GROUP:-TITILER-OMAN}"
+            export DEPLOY_NSG_NAME="${TITILER_ODP_NSG_NAME:-Titiler-Oman-nsg}"
+            export DEPLOY_PRIVATE_IP="${TITILER_ODP_PRIVATE_IP:-172.16.0.4}"
+            export DEPLOY_COMPOSE_FILE=docker-compose-strayos-deploy-odp.yml
+            export DEPLOY_WORKER_COUNT=3
+          - *install-deploy-tools
+          - *install-azure-cli
+          - *azure-login
+          - *select-azure-subscription
+          - *deploy-vm
+
 pipelines:
   branches:
     main:
       - step: *publish
       - step: *deploy
+      - step: *deploy-odp

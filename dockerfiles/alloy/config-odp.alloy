@@ -1,0 +1,37 @@
+discovery.docker "local" {
+	host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "nginx" {
+	targets = discovery.docker.local.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_strayos_stack"]
+		regex         = "odp"
+		action        = "keep"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		regex         = "nginx"
+		action        = "keep"
+	}
+
+	rule {
+		target_label = "service_name"
+		replacement  = "nginx"
+	}
+}
+
+loki.source.docker "nginx" {
+	host       = "unix:///var/run/docker.sock"
+	targets    = discovery.relabel.nginx.output
+	labels     = {source = "docker"}
+	forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}

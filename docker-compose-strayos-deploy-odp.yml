@@ -1,0 +1,204 @@
+name: strayos-titiler-odp
+
+x-titiler-common: &titiler-common
+  image: "${TITILER_IMAGE:-strayos1/strayos-titiler:app}"
+  expose:
+    - "8000"
+  mem_limit: 4g
+  command: ["uvicorn", "titiler.application.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--forwarded-allow-ips=*"]
+  environment:
+    - CPL_TMPDIR=/tmp
+    - GDAL_CACHEMAX=1024
+    - GDAL_INGESTED_BYTES_AT_OPEN=32768
+    - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
+    - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
+    - GDAL_HTTP_MULTIPLEX=YES
+    - GDAL_HTTP_VERSION=2
+    - CPL_VSIL_CURL_CACHE_SIZE=200000000
+    - PYTHONWARNINGS=ignore
+    - VSI_CACHE=FALSE
+    - TITILER_API_SENTRY_DSN=https://40fcb66451659a7b535b08d1306a1ee7@sentry.strayos.com/17
+    - TITILER_API_SENTRY_TRACES_SAMPLE_RATE=0.1
+  volumes:
+    - ./:/data
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 10s
+  logging:
+    driver: local
+    options:
+      max-size: "50m"
+      max-file: "3"
+
+services:
+  titiler-1:
+    <<: *titiler-common
+
+  titiler-2:
+    <<: *titiler-common
+
+  titiler-3:
+    <<: *titiler-common
+
+  nginx:
+    image: nginx
+    labels:
+      com.strayos.stack: odp
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./dockerfiles/nginx-strayos-odp.conf:/etc/nginx/nginx.conf:ro
+      - /etc/ssl/strayos:/etc/nginx/ssl:ro
+      - nginx-cache:/var/cache/nginx
+    depends_on:
+      - titiler-1
+      - titiler-2
+      - titiler-3
+      - grafana
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: local
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  prometheus:
+    image: prom/prometheus:latest
+    expose:
+      - "9090"
+    volumes:
+      - ./dockerfiles/prometheus-odp.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  loki:
+    image: grafana/loki:3.7.0
+    expose:
+      - "3100"
+    volumes:
+      - ./dockerfiles/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command:
+      - "-config.file=/etc/loki/local-config.yaml"
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  alloy:
+    image: grafana/alloy:v1.16.1
+    volumes:
+      - ./dockerfiles/alloy/config-odp.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    command:
+      - "run"
+      - "--storage.path=/var/lib/alloy/data"
+      - "/etc/alloy/config.alloy"
+    depends_on:
+      - loki
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    expose:
+      - "9100"
+    command:
+      - "--path.rootfs=/host"
+    volumes:
+      - /:/host:ro,rslave
+      - /proc:/host/proc:ro,rslave
+      - /sys:/host/sys:ro,rslave
+    pid: host
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    privileged: true
+    expose:
+      - "8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    devices:
+      - /dev/kmsg
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  grafana:
+    image: grafana/grafana:latest
+    expose:
+      - "3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./dockerfiles/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./dockerfiles/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./dockerfiles/grafana/dashboards:/etc/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-SimpleYetComplex}
+      - GF_SECURITY_COOKIE_SECURE=true
+      - GF_SECURITY_COOKIE_SAMESITE=lax
+      - GF_SERVER_DOMAIN=titilerodp.strayos.com
+      - GF_SERVER_PROTOCOL=http
+      - GF_SERVER_ROOT_URL=https://titilerodp.strayos.com/grafana/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANONYMOUS_ENABLED:-false}
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  alloy-data:
+  nginx-cache:
