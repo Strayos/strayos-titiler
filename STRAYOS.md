@@ -12,6 +12,7 @@ This application is normally deployed as a container. When another application o
 
 * Start the Strayos TiTiler stack with `docker-compose-strayos-dev.yml` when you want to run code from this project instead of an installed package. Development Nginx uses `dockerfiles/nginx-strayos-dev.conf` and serves HTTP on `http://localhost` without requiring the production TLS certificates.
 * Production deploys use `docker-compose-strayos-deploy.yml`, with the image supplied through `TITILER_IMAGE` and defaulting to `strayos1/strayos-titiler:app`.
+* The standalone ODP deployment at `https://titilerodp.strayos.com` uses `docker-compose-strayos-deploy-odp.yml`. It runs three backends on a dedicated 4-vCPU, 16-GiB VM; see **Azure Infrastructure: ODP** below.
 
 ## On-Prem Edge Deployment
 
@@ -91,13 +92,13 @@ container memory limit is 8 GiB by default.
 
 ### Branch behavior
 
-- `main` builds, pushes, and deploys the Docker image.
+- `main` builds and pushes the Docker image, then deploys the existing production VM followed by the standalone ODP VM.
 - Other branches have no configured pipeline.
 - Pipelines use a clone depth of `1`.
 
 ### Deploy step
 
-- Uses `atlassian/default-image:4` and `concurrency-group: titiler-app-deploy` to prevent overlapping production deploys.
+- Uses `atlassian/default-image:4`. Production uses `concurrency-group: titiler-app-deploy`; ODP uses `concurrency-group: titiler-odp-deploy` to serialize deployments to each VM.
 - Authenticates to Azure with the service-principal variables listed below.
 - Temporarily permits SSH from the runner's public IPv4 address, syncs the repository with `rsync`, deploys the services, and removes the NSG rule during cleanup.
 
@@ -111,13 +112,27 @@ container memory limit is 8 GiB by default.
 | `DEPLOY_AZURE_PASS` | Workspace | Azure service-principal secret. |
 | `AZURE_TENANT_ID` | Workspace | Azure tenant ID for service-principal login. |
 | `AZURE_SUBSCRIPTION_ID` | Workspace | Azure subscription selected before NSG changes. |
-| `SSH_KEY_B64` | Repository | Base64-encoded private SSH key used for VM access. |
+| `SSH_KEY_B64` | Repository | Shared base64-encoded private SSH key used for both production and ODP VM access. |
 | `TITILER_SERVER` | Repository | Public host or IP for the production VM. |
 | `TITILER_SSH_USER` | Repository | SSH user for the production VM. |
+| `ODP_TITILER_SERVER` | Repository or ODP deployment | Public host or IP for the standalone ODP VM. |
+| `ODP_TITILER_SSH_USER` | Repository or ODP deployment | SSH user for the ODP VM. |
+
+Create a Bitbucket deployment environment named **ODP**, of type **Production**, and configure `ODP_TITILER_SERVER` and `ODP_TITILER_SSH_USER` as repository variables or ODP deployment variables before running the main-branch pipeline. ODP reuses the repository's `SSH_KEY_B64` and the workspace Docker Hub and Azure login variables; the service principal needs permission to manage rules on the ODP NSG. Keep the shared SSH key variable secured.
+
+### Optional ODP infrastructure overrides
+
+Like production, ODP has embedded Azure infrastructure defaults. These values were verified with Azure CLI against `Titiler-Oman` in `TITILER-OMAN`; the following Bitbucket variables are optional overrides rather than deployment requirements:
+
+| Variable | Embedded default | Purpose |
+| --- | --- | --- |
+| `TITILER_ODP_RESOURCE_GROUP` | `TITILER-OMAN` | Azure resource group containing the ODP NSG. |
+| `TITILER_ODP_NSG_NAME` | `Titiler-Oman-nsg` | NIC-level NSG controlling SSH access to the ODP VM. |
+| `TITILER_ODP_PRIVATE_IP` | `172.16.0.4` | VM private IP used as the SSH NSG rule destination. |
 
 ### Deployment behavior
 
-The pipeline pushes `${DOCKER_HUB_USER}/strayos-titiler:app` and syncs the repository to `~/strayos-titiler` without overwriting the VM's `.env`. Prometheus, Loki, and Alloy are recreated to reload bind-mounted configuration. The six backends are replaced sequentially to preserve availability, and Nginx is recreated last so its upstreams resolve and its file bind mount follows the inode replaced by `rsync`. See `bitbucket-pipelines.yml` for the exact sequence.
+The pipeline pushes `${DOCKER_HUB_USER}/strayos-titiler:app` once and syncs the repository to `~/strayos-titiler` on each VM without overwriting that VM's `.env`. Prometheus, Loki, and Alloy are recreated to reload bind-mounted configuration. Backends are replaced sequentially (six on production, three on ODP), and each VM's Nginx is recreated last so its upstreams resolve and its file bind mount follows the inode replaced by `rsync`. The two deployment steps reuse the same YAML-anchored Azure/SSH deployment commands, with ODP explicitly selecting its own Compose file, worker count, and connection/NSG variables. See `bitbucket-pipelines.yml` for the exact sequence.
 
 ## Azure Infrastructure: Production
 
@@ -165,9 +180,9 @@ titiler_backends
   -> titiler-1..6:8000  # one Uvicorn worker per container
 ```
 
-Each backend is an independent process with its own Rasterio/GDAL state and cache; memory is not shared between workers. Development and production limit each backend container to 4 GiB. Backends use `/healthz` healthchecks, while Nginx uses `nginx -t`. The public health response includes installed TiTiler and geospatial library versions.
+Each backend is an independent process with its own Rasterio/GDAL state and cache; memory is not shared between workers. Development, production, and ODP limit each backend container to 4 GiB. Backends use `/healthz` healthchecks, while Nginx uses `nginx -t`. The public health response includes installed TiTiler and geospatial library versions.
 
-Production supports HTTP/2 for multiplexed browser tile requests, falls back to HTTP/1.1, and redirects port 80 to HTTPS. Local development remains HTTP-only.
+Production and ODP support HTTP/2 for multiplexed browser tile requests, fall back to HTTP/1.1, and redirect port 80 to HTTPS. Local development remains HTTP-only.
 
 ### Observability and Logging
 
@@ -191,15 +206,15 @@ All services use Docker's `local` logging driver with file rotation:
 
 Worst-case Docker local-log usage is approximately 1.23 GB. These rotated binary logs live under `/var/lib/docker/containers/<id>/local-logs/` and are read with `docker logs`. Loki's indexed events are stored separately in `loki-data`. Prometheus and Loki retain data for 7 days; Grafana and Alloy use `grafana-data` and `alloy-data`. Grafana provisioning files are under `dockerfiles/grafana/`.
 
-Production and development Nginx emit JSON for completed TiTiler API requests, which Alloy ships asynchronously to Loki. Events contain the requester IP, normalized endpoint, full client-facing `request_url` (`scheme://Host/path?query`), status, request time, response size, upstream details, and cache status. Full URLs include raster query strings and may contain signed credentials; they appear in the Docker access logs and Loki's 7-day store, accessible to Grafana users. URLs from before this field was deployed are not recoverable from older access events. Grafana, metrics, healthcheck, and production HTTP redirect requests are excluded. Client IP and full URL remain parsed JSON fields rather than indexed Loki labels to avoid high-cardinality streams. The independent edge Nginx configuration still omits query strings and has no Grafana stack.
+Production, development, and ODP Nginx emit JSON for completed TiTiler API requests, which Alloy ships asynchronously to Loki. Events contain the requester IP, normalized endpoint, full client-facing `request_url` (`scheme://Host/path?query`), status, request time, response size, upstream details, and cache status. Full URLs include raster query strings and may contain signed credentials; they appear in the Docker access logs and Loki's 7-day store, accessible to Grafana users. URLs from before this field was deployed are not recoverable from older access events. Grafana, metrics, healthcheck, and production/ODP HTTP redirect requests are excluded. Client IP and full URL remain parsed JSON fields rather than indexed Loki labels to avoid high-cardinality streams. The independent edge Nginx configuration still omits query strings and has no Grafana stack.
 
 Dashboard traffic totals include Nginx cache hits, while Starlette metrics include only backend work. Cached delivery includes `HIT`, `STALE`, `UPDATING`, and `REVALIDATED`; backend delivery includes `MISS`, `BYPASS`, `EXPIRED`, and uncached upstream requests. Client-IP panels support up to 10,000 result series per query, retaining a safety bound above Loki's default of 500.
 
-The **API Endpoints (Selected Time Range)** table shows all observed endpoint groups sorted by request count, without a top-10 limit. Grafana combines the instant-query series into one table with **API** and **Requests** columns. All three Nginx configurations normalize known dynamic routes and retain the actual path (`$uri`, without query strings) for unmapped routes instead of logging `other_api`. The endpoint and slow-request tables recover paths from `request_url` for retained legacy `other_api` events; older events without a URL display **Unknown endpoint (legacy log)** because their original path was not recorded. The endpoint-count query drops the temporary URL field before aggregation, so different query strings do not create separate series. Endpoint queries remain subject to Loki's 10,000-series safety bound.
+The **API Endpoints (Selected Time Range)** table shows all observed endpoint groups sorted by request count, without a top-10 limit. Grafana combines the instant-query series into one table with **API** and **Requests** columns. All Strayos Nginx configurations normalize known dynamic routes and retain the actual path (`$uri`, without query strings) for unmapped routes instead of logging `other_api`. The endpoint and slow-request tables recover paths from `request_url` for retained legacy `other_api` events; older events without a URL display **Unknown endpoint (legacy log)** because their original path was not recorded. The endpoint-count query drops the temporary URL field before aggregation, so different query strings do not create separate series. Endpoint queries remain subject to Loki's 10,000-series safety bound.
 
 The **Top 20 Slowest Requests (>1s)** table ranks individual Nginx access events with client-facing `request_time` strictly greater than 1 second across the selected Grafana range. Its instant LogQL query parses and numerically filters duration *before* constructing a temporary per-event key from the nanosecond Loki timestamp and log line, unwraps duration, and applies `topk(20)` in Loki before Grafana receives the rows. Fewer than 20 qualifying requests yield fewer rows even if faster requests exist. Grafana converts the returned labeled series into table rows, sorts by duration, and hides the temporary event key. Equal-duration requests remain separate, and the panel does not depend on Grafana's log-row retrieval limit. It displays the logged completion time, normalized endpoint, full request URL (with an inspectable cell for long URLs), method, client IP, status, delivery source, and duration. Older retained events lack the full URL. The ranking covers only Loki's retained 7 days; ranges that create over 10,000 *qualifying* per-event series (or hit other query limits) still fail explicitly. `topk(20)` alone does not reduce cardinality before Loki applies the series limit. The per-event key is created at query time and is not an indexed Loki label.
 
-Production exposes Grafana only through `/grafana/`; Prometheus and Loki remain internal. Anonymous Grafana access is disabled by default. Set `GRAFANA_ADMIN_PASSWORD` and, only when needed, `GRAFANA_ANONYMOUS_ENABLED=true` in the VM's `.env`.
+Production and ODP expose Grafana only through `/grafana/`; Prometheus and Loki remain internal. Anonymous Grafana access is disabled by default. Set `GRAFANA_ADMIN_PASSWORD` and, only when needed, `GRAFANA_ANONYMOUS_ENABLED=true` in each VM's `.env`.
 
 ### Production Environment Variables
 
@@ -218,21 +233,85 @@ Most production variables tune Rasterio/GDAL access to remote raster data rather
 | `PYTHONWARNINGS` | `ignore` | Suppresses warnings, including potentially useful deprecation notices. |
 | `VSI_CACHE` | `FALSE` | Disables the generic per-file-handle cache; it does not disable `/vsicurl/` caching. |
 
+## Azure Infrastructure: ODP
+
+ODP is a standalone deployment reached explicitly at `https://titilerodp.strayos.com`. It uses the same TiTiler image, remote raster access, GDAL tuning, dashboards, Loki configuration, retention, and response-cache behavior as production.
+
+| Resource | ODP configuration |
+| --- | --- |
+| Resource group | `TITILER-OMAN` |
+| VM name | `Titiler-Oman` |
+| VM size | `Standard_D4as_v5` |
+| Azure region | `uaenorth` |
+| Compose file | `docker-compose-strayos-deploy-odp.yml` |
+| Default Compose project | `strayos-titiler-odp` |
+| VM CPU | 4 vCPUs |
+| VM RAM | 16 GiB |
+| VM OS disk | 64 GiB Azure managed disk, `Premium_LRS` |
+| VM private IP | `172.16.0.4` |
+| NSG | `Titiler-Oman-nsg` at NIC level; no subnet NSG |
+| SSH user | `ubuntu`, supplied through `ODP_TITILER_SSH_USER` |
+| TiTiler backends | `titiler-1`, `titiler-2`, `titiler-3`; one Uvicorn worker each |
+| Backend memory limit | 4 GiB each, 12 GiB combined |
+| Combined decoded GDAL block-cache ceiling | 3 GiB; not a startup allocation |
+| Combined process-wide `/vsicurl/` cache ceiling | 600,000,000 bytes, approximately 572 MiB |
+| Nginx configuration | `dockerfiles/nginx-strayos-odp.conf` |
+| Tile upstream behavior | 125-second Nginx read-idle timeout; upstream retries disabled |
+| Prometheus configuration | `dockerfiles/prometheus-odp.yml`, scraping exactly three backends plus node-exporter and cAdvisor |
+| Alloy configuration | `dockerfiles/alloy/config-odp.alloy` |
+| Grafana | `https://titilerodp.strayos.com/grafana/` |
+| Nginx disk cache | 21 GiB, 48-hour successful-response TTL |
+| Prometheus / Loki retention | 7 days |
+
+VM sizing, disk capacity, SSH username, private IP, and NSG attachment were verified with Azure CLI. The 64 GiB managed-disk capacity replaces the initial 61 GB disk-size assumption; usable filesystem capacity was not queried.
+
+Three workers halve the six-worker production topology for the smaller VM. Their combined hard memory limit leaves approximately 4 GiB for the OS, Nginx, Grafana, Prometheus, Loki, Alloy, node-exporter, and cAdvisor. CPU is not pinned or reserved. Cache ceilings are included within backend memory limits, not additional allocations. ODP's rotated Docker local logs have an approximately 780 MB combined ceiling, separate from cache and monitoring data.
+
+ODP has its own Compose network, generated container names, and project-scoped `nginx-cache`, `prometheus-data`, `grafana-data`, `loki-data`, and `alloy-data` volumes. Its Nginx carries the `com.strayos.stack=odp` label; the ODP Alloy configuration selects this label and the Compose `nginx` service rather than relying on a fixed container name. The shared dashboard queries still use `service_name="nginx"` in ODP's own Loki store.
+
+### ODP VM setup
+
+1. Install Docker with the Compose plugin and give the deployment SSH user permission to run Docker. The pipeline syncs the repository into `~/strayos-titiler`.
+2. Point `titilerodp.strayos.com` at the new VM and allow public ports 80/443. The verified NSG currently allows public 443; add an inbound TCP 80 rule for the HTTP-to-HTTPS redirect. Nginx terminates TLS and supports HTTP/2.
+3. Install the certificate and key at `/etc/ssl/strayos/strayos.com.crt` and `/etc/ssl/strayos/star_strayos_com.key`. The certificate must cover `titilerodp.strayos.com`; the directory is mounted read-only into Nginx.
+4. Set `GRAFANA_ADMIN_PASSWORD` in `~/strayos-titiler/.env`. `TITILER_IMAGE` defaults to `strayos1/strayos-titiler:app`; the pipeline explicitly selects the image it publishes.
+5. Configure the Bitbucket **ODP** deployment environment, `ODP_TITILER_SERVER`, and `ODP_TITILER_SSH_USER` from **CI/CD Pipeline** above, reusing `SSH_KEY_B64`. Resource group, NSG, and private IP use the embedded defaults unless their optional overrides are set. The pipeline temporarily allows runner SSH to the ODP private IP and removes that rule on exit.
+
+For a manual initial start from the repository directory:
+
+```bash
+docker compose -f docker-compose-strayos-deploy-odp.yml config
+docker compose -f docker-compose-strayos-deploy-odp.yml pull
+docker compose -f docker-compose-strayos-deploy-odp.yml up -d --wait
+```
+
+Inspect or stop the ODP stack with:
+
+```bash
+docker compose -f docker-compose-strayos-deploy-odp.yml ps
+docker compose -f docker-compose-strayos-deploy-odp.yml logs
+docker compose -f docker-compose-strayos-deploy-odp.yml down
+```
+
+Normal `down` retains ODP's cache and monitoring volumes. Main-branch deployments update production first and ODP second, replacing each VM's workers sequentially and recreating its Nginx last.
+
 ## Caching
 
 ### Nginx Response Cache
 
-Nginx uses the persistent `nginx-cache` volume for a shared 21 GiB cache. It caches tiles and successful `GET`/`HEAD` requests to `/cog/statistics` and `/cog/validate` (including COG validation responses with `"COG": false`); STAC statistics and GeoJSON `POST /cog/statistics` are not cached. All three Nginx configurations use the same 48-hour successful-response TTL and cache lock for COG validation. Cache keys include the scheme, host, path, and query string, so different raster URLs or validation options remain separate. Failed HTTP responses are not cached.
+Nginx uses the persistent `nginx-cache` volume for a shared 21 GiB cache within each deployment. It caches tiles and successful `GET`/`HEAD` requests to `/cog/statistics` and `/cog/validate` (including COG validation responses with `"COG": false`); STAC statistics and GeoJSON `POST /cog/statistics` are not cached. All Strayos Nginx configurations use the same 48-hour successful-response TTL and cache lock for COG validation. Cache keys include the scheme, host, path, and query string, so different raster URLs or validation options remain separate. Failed HTTP responses are not cached.
 
-Production, development, and Edge Nginx include `X-TiTiler-Cache` on responses for cache-enabled requests. It exposes Nginx's `$upstream_cache_status` (for example, `MISS` when fetched from the backend, `HIT` when served from the cache, or `STALE` when serving an expired entry). Nginx omits the header when there is no cache status, such as on non-cached endpoints. This diagnostic header does not change caching behavior and can be inspected in browser developer tools; `Cache-Control` alone does not identify a cache hit.
+Production, ODP, development, and Edge Nginx include `X-TiTiler-Cache` on responses for cache-enabled requests. It exposes Nginx's `$upstream_cache_status` (for example, `MISS` when fetched from the backend, `HIT` when served from the cache, or `STALE` when serving an expired entry). Nginx omits the header when there is no cache status, such as on non-cached endpoints. This diagnostic header does not change caching behavior and can be inspected in browser developer tools; `Cache-Control` alone does not identify a cache hit.
 
 Successful GET responses advertise a 90-minute browser lifetime through `Cache-Control`. Nginx preserves that client header but keeps successful cached responses for 48 hours. Entries inactive for 48 hours or displaced as the cache approaches 21 GiB may be removed earlier. The volume survives normal container recreation but not volume deletion, explicit purging, or disk loss.
 
 ### GDAL Cache Behavior
 
-`VSI_CACHE=FALSE` disables the per-file-handle byte-range cache because datasets are opened and closed per request. `GDAL_CACHEMAX=1024` is a ceiling for decoded blocks held by open datasets, not a startup allocation. Production also provides a process-wide 200,000,000-byte `/vsicurl/` cache, which can reuse downloaded ranges across dataset opens until eviction or worker restart. Development does not set this cache size explicitly.
+`VSI_CACHE=FALSE` disables the per-file-handle byte-range cache because datasets are opened and closed per request. `GDAL_CACHEMAX=1024` is a ceiling for decoded blocks held by open datasets, not a startup allocation. Production and ODP also provide a process-wide 200,000,000-byte `/vsicurl/` cache per backend, which can reuse downloaded ranges across dataset opens until eviction or worker restart. Development does not set this cache size explicitly.
 
 ### Memory Budget
+
+The six-worker production budget is:
 
 ```
 6 backends * 1024 MiB GDAL_CACHEMAX = ~6 GiB decoded-block ceiling (not startup allocation)
@@ -242,13 +321,13 @@ No per-file VSI_CACHE overhead
 32 GiB total RAM shared by GDAL cache, Python, Nginx, OS, request buffers, Azure Blob connections
 ```
 
-Cache ceilings are not reserved allocations; backend memory must also accommodate Python, native libraries, request buffers, and other allocations.
+Cache ceilings are not reserved allocations; backend memory must also accommodate Python, native libraries, request buffers, and other allocations. The three-worker ODP budget is listed under **Azure Infrastructure: ODP**.
 
 ## Request Routing
 
 Nginx uses `hash $titiler_hash_key consistent`, keyed by the `url` query parameter when present and otherwise by the full request URI. Requests for one raster therefore usually reach the same backend and reuse that process's `/vsicurl/` cache.
 
-Routing is best-effort: failed requests can spill to another backend, trading some cache duplication for availability. A hot raster may also concentrate CPU load on one worker; distributing it would improve CPU balance but reduce cache locality. Six single-worker backends enable this routing and leave two of the VM's eight vCPUs for Nginx, the OS, and supporting services.
+Routing is best-effort: failed requests can spill to another backend, trading some cache duplication for availability. A hot raster may also concentrate CPU load on one worker; distributing it would improve CPU balance but reduce cache locality. Production uses six single-worker backends on eight vCPUs; ODP uses three on four vCPUs. This sizing leaves nominal CPU headroom for Nginx, the OS, and supporting services; cores are not pinned or reserved.
 
 ## Sources
 
