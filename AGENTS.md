@@ -19,3 +19,7 @@ The `stress-test/` directory stress-tests the TiTiler VM. It requests tiles from
 * use the repository-root virtual environment before running Python scripts: `source .venv/bin/activate`
 * add concise docstrings and type hints to stress-test code
 * run pycompile, Black, and isort after changing stress-test Python code
+
+### RCA
+
+* if you perform an RCA, All RCA is supposed to be in RCA/ dir with a subdir by date and time
