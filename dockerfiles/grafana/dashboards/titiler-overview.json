@@ -456,7 +456,7 @@
         "type": "loki",
         "uid": "loki"
       },
-      "description": "Most-used normalized TiTiler API endpoints in the selected time range. Tile coordinates and raster query strings are never labels.",
+      "description": "All observed TiTiler API endpoint groups in the selected time range, sorted by request count. Known dynamic routes are normalized; unmapped routes show their actual path without query strings. Legacy catch-all entries are recovered from logged URLs when available; entries without a URL are marked Unknown endpoint (legacy log).",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -499,12 +499,46 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "topk(10, sum by (endpoint) (count_over_time({service_name=\"nginx\"} | json traffic=\"traffic\", endpoint=\"endpoint\" | traffic=\"api\" [$__range])))",
+          "expr": "sort_desc(sum by (endpoint) (count_over_time({service_name=\"nginx\"} | json traffic=\"traffic\", endpoint=\"endpoint\", request_url=\"request_url\" | traffic=\"api\" | label_format endpoint=`{{ if eq .endpoint \"other_api\" }}{{ if .request_url }}{{ regexReplaceAll \"[?].*\" (regexReplaceAll \"^https?://[^/]+\" .request_url \"\") \"\" }}{{ else }}Unknown endpoint (legacy log){{ end }}{{ else }}{{ .endpoint }}{{ end }}` | drop request_url [$__range])))",
+          "legendFormat": "{{endpoint}}",
           "queryType": "instant",
           "refId": "A"
         }
       ],
-      "title": "Top Endpoints",
+      "title": "API Endpoints (Selected Time Range)",
+      "transformations": [
+        {
+          "id": "seriesToRows",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "Metric": 0,
+              "Value": 1
+            },
+            "renameByName": {
+              "Metric": "API",
+              "Value": "Requests"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Requests",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
       "type": "table"
     },
     {
@@ -696,7 +730,7 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "sort_desc(topk(20, max_over_time({service_name=\"nginx\"} | json traffic=\"traffic\", timestamp=\"timestamp\", client_ip=\"client_ip\", method=\"method\", endpoint=\"endpoint\", request_url=\"request_url\", status=\"status\", delivery_source=\"delivery_source\", request_time=\"request_time\" | traffic=\"api\" | request_time > 1 | label_format event_id=`{{ unixEpochNanos __timestamp__ }}:{{ __line__ }}` | unwrap request_time | __error__=\"\" [$__range]) by (event_id, timestamp, client_ip, method, endpoint, request_url, status, delivery_source)))",
+          "expr": "sort_desc(topk(20, max_over_time({service_name=\"nginx\"} | json traffic=\"traffic\", timestamp=\"timestamp\", client_ip=\"client_ip\", method=\"method\", endpoint=\"endpoint\", request_url=\"request_url\", status=\"status\", delivery_source=\"delivery_source\", request_time=\"request_time\" | traffic=\"api\" | request_time > 1 | label_format endpoint=`{{ if eq .endpoint \"other_api\" }}{{ if .request_url }}{{ regexReplaceAll \"[?].*\" (regexReplaceAll \"^https?://[^/]+\" .request_url \"\") \"\" }}{{ else }}Unknown endpoint (legacy log){{ end }}{{ else }}{{ .endpoint }}{{ end }}` | label_format event_id=`{{ unixEpochNanos __timestamp__ }}:{{ __line__ }}` | unwrap request_time | __error__=\"\" [$__range]) by (event_id, timestamp, client_ip, method, endpoint, request_url, status, delivery_source)))",
           "queryType": "instant",
           "refId": "A"
         }
@@ -773,6 +807,6 @@
   "description": "Client-facing Nginx traffic, requester IPs, delivery source, status, latency, endpoints, and TiTiler backend health.",
   "title": "TiTiler API Traffic & Performance",
   "uid": "strayos-titiler-overview",
-  "version": 6,
+  "version": 7,
   "weekStart": ""
 }
