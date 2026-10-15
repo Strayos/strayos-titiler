@@ -61,6 +61,10 @@ definitions:
               echo "ERROR: DOCKER_HUB_USER is empty"
               exit 1
             fi
+            if [ -z "${DOCKER_HUB_TOKEN:+set}" ]; then
+              echo "ERROR: DOCKER_HUB_TOKEN is empty"
+              exit 1
+            fi
             if [ -z "$SSH_KEY_B64" ]; then
               echo "ERROR: SSH_KEY_B64 is empty"
               exit 1
@@ -118,6 +122,15 @@ definitions:
               exit 1
             fi
 
+            # Docker credentials belong to the remote SSH user, not the build runner.
+            case "$-" in
+              *x*) XTRACE_WAS_ON=1 ;;
+              *) XTRACE_WAS_ON=0 ;;
+            esac
+            set +x
+            printf '%s\n' "$DOCKER_HUB_TOKEN" | ssh $SSH_OPTS "${TITILER_SSH_USER}@${TITILER_SERVER}" "docker login --username '${DOCKER_HUB_USER}' --password-stdin"
+            if [ "$XTRACE_WAS_ON" = "1" ]; then set -x; fi
+
             rsync -avz --delete --exclude=.git --exclude=.env --exclude=.venv --exclude=venv --exclude=.pytest_cache --exclude=__pycache__ --exclude='*.pyc' -e "ssh $SSH_OPTS" ./ "${TITILER_SSH_USER}@${TITILER_SERVER}:~/strayos-titiler/"
 
             ssh $SSH_OPTS "${TITILER_SSH_USER}@${TITILER_SERVER}" "
@@ -165,5 +178,8 @@ pipelines:
   branches:
     main:
       - step: *publish
-      - step: *deploy
-      - step: *deploy-odp
+      - parallel:
+          fail-fast: false
+          steps:
+            - step: *deploy
+            - step: *deploy-odp
