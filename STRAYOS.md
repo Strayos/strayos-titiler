@@ -92,23 +92,25 @@ container memory limit is 8 GiB by default.
 
 ### Branch behavior
 
-- `main` builds and pushes the Docker image, then deploys the existing production VM followed by the standalone ODP VM.
+- `main` builds and pushes the Docker image, then deploys the existing production VM and the standalone ODP VM in parallel.
 - Other branches have no configured pipeline.
 - Pipelines use a clone depth of `1`.
 
 ### Deploy step
 
 - Uses `atlassian/default-image:4`. Production uses `concurrency-group: titiler-app-deploy`; ODP uses `concurrency-group: titiler-odp-deploy` to serialize deployments to each VM.
+- The two deployment steps run in a `parallel` group after image publication succeeds. `fail-fast: false` lets the other deployment finish when one fails; a failure still fails the overall pipeline. Each target's concurrency group continues to prevent overlapping deploys to that VM.
 - Production uses the existing Bitbucket `Production` deployment environment. ODP runs as a regular pipeline step with repository/workspace variables and its own concurrency group; it requires no additional Bitbucket deployment environment.
 - Authenticates to Azure with the service-principal variables listed below.
 - Temporarily permits SSH from the runner's public IPv4 address, syncs the repository with `rsync`, deploys the services, and removes the NSG rule during cleanup.
+- Authenticates Docker Hub separately on each target VM as its SSH user before syncing or pulling images. The token is sent through SSH stdin with shell tracing disabled.
 
 ### Required pipeline variables
 
 | Variable | Scope | Purpose |
 | --- | --- | --- |
 | `DOCKER_HUB_USER` | Workspace | Docker Hub username/namespace used for the image repository. |
-| `DOCKER_HUB_TOKEN` | Workspace | Docker Hub token used by `docker login`. |
+| `DOCKER_HUB_TOKEN` | Workspace | Docker Hub token used for image publication and authenticated pulls on both deployment VMs. |
 | `DEPLOY_AZURE_ID` | Workspace | Azure service-principal client/application ID. |
 | `DEPLOY_AZURE_PASS` | Workspace | Azure service-principal secret. |
 | `AZURE_TENANT_ID` | Workspace | Azure tenant ID for service-principal login. |
@@ -133,7 +135,11 @@ Like production, ODP has embedded Azure infrastructure defaults. These values we
 
 ### Deployment behavior
 
-The pipeline pushes `${DOCKER_HUB_USER}/strayos-titiler:app` once and syncs the repository to `~/strayos-titiler` on each VM without overwriting that VM's `.env`. Prometheus, Loki, and Alloy are recreated to reload bind-mounted configuration. Backends are replaced sequentially (six on production, three on ODP), and each VM's Nginx is recreated last so its upstreams resolve and its file bind mount follows the inode replaced by `rsync`. The two deployment steps reuse the same YAML-anchored Azure/SSH deployment commands, with ODP explicitly selecting its own Compose file, worker count, and connection/NSG variables. See `bitbucket-pipelines.yml` for the exact sequence.
+The pipeline pushes `${DOCKER_HUB_USER}/strayos-titiler:app` once, then starts the two deployment steps in parallel. After SSH is ready, each step logs into Docker Hub on its target VM using `DOCKER_HUB_USER` and `DOCKER_HUB_TOKEN`, then syncs the repository to `~/strayos-titiler` without overwriting that VM's `.env`. The remote login uses `--password-stdin` over SSH with runner shell tracing disabled, and Docker stores the login for the target SSH user. Prometheus, Loki, and Alloy are recreated to reload bind-mounted configuration. Within each VM, backends are replaced sequentially (six on production, three on ODP), and Nginx is recreated last so its upstreams resolve and its file bind mount follows the inode replaced by `rsync`. The two deployment steps reuse the same YAML-anchored Azure/SSH deployment commands, with ODP explicitly selecting its own Compose file, worker count, and connection/NSG variables. See `bitbucket-pipelines.yml` for the exact sequence.
+
+The initial ODP pull failed because the new `ubuntu` account had no Docker Hub login. Production's `azureuser` already had working registry credentials. A login performed only inside the image-build runner does not authenticate either VM; both deploy steps now establish their own remote login. An absent or rejected token stops the deployment before repository sync or container changes, while the EXIT trap removes the temporary SSH NSG rule.
+
+Parallel steps are enabled through YAML and require two available workspace concurrent-step slots; no extra Bitbucket enable switch or ODP deployment environment is needed. Workspace concurrency limits apply across all running pipelines. Build minutes are the sum of both steps' execution time, even though their elapsed time overlaps. See Bitbucket's [parallel step options](https://support.atlassian.com/bitbucket-cloud/docs/parallel-step-options/).
 
 ## Azure Infrastructure: Production
 
@@ -248,6 +254,7 @@ ODP is a standalone deployment reached explicitly at `https://titilerodp.strayos
 | Default Compose project | `strayos-titiler-odp` |
 | VM CPU | 4 vCPUs |
 | VM RAM | 16 GiB |
+| VM OS | Ubuntu 24.04.4 LTS, x86_64 |
 | VM OS disk | 64 GiB Azure managed disk, `Premium_LRS` |
 | VM private IP | `172.16.0.4` |
 | NSG | `Titiler-Oman-nsg` at NIC level; no subnet NSG |
@@ -264,7 +271,7 @@ ODP is a standalone deployment reached explicitly at `https://titilerodp.strayos
 | Nginx disk cache | 21 GiB, 48-hour successful-response TTL |
 | Prometheus / Loki retention | 7 days |
 
-VM sizing, disk capacity, SSH username, private IP, and NSG attachment were verified with Azure CLI. The 64 GiB managed-disk capacity replaces the initial 61 GB disk-size assumption; usable filesystem capacity was not queried.
+VM sizing, managed-disk capacity, SSH username, private IP, and NSG attachment were verified with Azure CLI. SSH confirmed Ubuntu 24.04.4 LTS and a root filesystem reported as `61G` by `df -h`; Azure exposes a 64 GiB managed OS disk.
 
 Three workers halve the six-worker production topology for the smaller VM. Their combined hard memory limit leaves approximately 4 GiB for the OS, Nginx, Grafana, Prometheus, Loki, Alloy, node-exporter, and cAdvisor. CPU is not pinned or reserved. Cache ceilings are included within backend memory limits, not additional allocations. ODP's rotated Docker local logs have an approximately 780 MB combined ceiling, separate from cache and monitoring data.
 
@@ -272,19 +279,40 @@ ODP has its own Compose network, generated container names, and project-scoped `
 
 ### ODP VM setup
 
-1. Install Docker with the Compose plugin and give the deployment SSH user permission to run Docker. The pipeline syncs the repository into `~/strayos-titiler`.
+1. Install Docker with the Compose plugin using `sudo bash scripts/install-docker-ubuntu.sh ubuntu` on the VM, or the SSH command below. The installer also ensures `rsync` is installed and adds `ubuntu` to the Docker group. The pipeline syncs the repository into `~/strayos-titiler`.
 2. Point `titilerodp.strayos.com` at the new VM and allow public ports 80/443. The verified NSG currently allows public 443; add an inbound TCP 80 rule for the HTTP-to-HTTPS redirect. Nginx terminates TLS and supports HTTP/2.
 3. Install the certificate and key at `/etc/ssl/strayos/strayos.com.crt` and `/etc/ssl/strayos/star_strayos_com.key`. The certificate must cover `titilerodp.strayos.com`; the directory is mounted read-only into Nginx.
 4. Set `GRAFANA_ADMIN_PASSWORD` in `~/strayos-titiler/.env`. `TITILER_IMAGE` defaults to `strayos1/strayos-titiler:app`; the pipeline explicitly selects the image it publishes.
 5. Configure the repository variables `ODP_TITILER_SERVER` and `ODP_TITILER_SSH_USER` from **CI/CD Pipeline** above, reusing `SSH_KEY_B64`. Resource group, NSG, and private IP use the embedded defaults unless their optional overrides are set. The pipeline temporarily allows runner SSH to the ODP private IP and removes that rule on exit.
 
-For a manual initial start from the repository directory:
+### Docker bootstrap
+
+From the local repository, use the `Titiler-ODP` SSH configuration entry to install Docker Engine, Buildx, and the Compose plugin from Docker's official Ubuntu repository:
 
 ```bash
+ssh Titiler-ODP 'sudo -n bash -s -- ubuntu' < scripts/install-docker-ubuntu.sh
+```
+
+The installer enables Docker and containerd at boot and runs `hello-world`. Open a new SSH connection to use the updated Docker-group membership:
+
+```bash
+ssh -S none Titiler-ODP 'docker version && docker compose version && docker run --rm hello-world'
+```
+
+ODP bootstrap was verified on Oct-15-2026 with Docker Engine **29.9.1**, Compose **5.6.0**, and Buildx **0.38.0**. Docker and containerd were active and enabled; a fresh SSH session as `ubuntu` ran a container without `sudo`, and the installed Compose plugin validated `docker-compose-strayos-deploy-odp.yml`.
+
+### Initial stack start
+
+For a manual initial start from the repository directory on the VM:
+
+```bash
+docker login --username strayos1
 docker compose -f docker-compose-strayos-deploy-odp.yml config
 docker compose -f docker-compose-strayos-deploy-odp.yml pull
 docker compose -f docker-compose-strayos-deploy-odp.yml up -d --wait
 ```
+
+Use the Docker Hub account with access to the configured image for a manual login. Automated deployment supplies the existing workspace credentials and performs this login on the VM itself.
 
 Inspect or stop the ODP stack with:
 
@@ -294,7 +322,7 @@ docker compose -f docker-compose-strayos-deploy-odp.yml logs
 docker compose -f docker-compose-strayos-deploy-odp.yml down
 ```
 
-Normal `down` retains ODP's cache and monitoring volumes. Main-branch deployments update production first and ODP second, replacing each VM's workers sequentially and recreating its Nginx last.
+Normal `down` retains ODP's cache and monitoring volumes. Main-branch deployments update production and ODP in parallel, replacing each VM's workers sequentially and recreating its Nginx last.
 
 ## Caching
 
