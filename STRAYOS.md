@@ -99,6 +99,7 @@ container memory limit is 8 GiB by default.
 ### Deploy step
 
 - Uses `atlassian/default-image:4`. Production uses `concurrency-group: titiler-app-deploy`; ODP uses `concurrency-group: titiler-odp-deploy` to serialize deployments to each VM.
+- Production uses the existing Bitbucket `Production` deployment environment. ODP runs as a regular pipeline step with repository/workspace variables and its own concurrency group; it requires no additional Bitbucket deployment environment.
 - Authenticates to Azure with the service-principal variables listed below.
 - Temporarily permits SSH from the runner's public IPv4 address, syncs the repository with `rsync`, deploys the services, and removes the NSG rule during cleanup.
 
@@ -115,10 +116,10 @@ container memory limit is 8 GiB by default.
 | `SSH_KEY_B64` | Repository | Shared base64-encoded private SSH key used for both production and ODP VM access. |
 | `TITILER_SERVER` | Repository | Public host or IP for the production VM. |
 | `TITILER_SSH_USER` | Repository | SSH user for the production VM. |
-| `ODP_TITILER_SERVER` | Repository or ODP deployment | Public host or IP for the standalone ODP VM. |
-| `ODP_TITILER_SSH_USER` | Repository or ODP deployment | SSH user for the ODP VM. |
+| `ODP_TITILER_SERVER` | Repository | Public host or IP for the standalone ODP VM. |
+| `ODP_TITILER_SSH_USER` | Repository | SSH user for the ODP VM. |
 
-Create a Bitbucket deployment environment named **ODP**, of type **Production**, and configure `ODP_TITILER_SERVER` and `ODP_TITILER_SSH_USER` as repository variables or ODP deployment variables before running the main-branch pipeline. ODP reuses the repository's `SSH_KEY_B64` and the workspace Docker Hub and Azure login variables; the service principal needs permission to manage rules on the ODP NSG. Keep the shared SSH key variable secured.
+Configure `ODP_TITILER_SERVER` and `ODP_TITILER_SSH_USER` as repository variables before running the main-branch pipeline. ODP reuses the repository's `SSH_KEY_B64` and the workspace Docker Hub and Azure login variables; the service principal needs permission to manage rules on the ODP NSG. Keep the shared SSH key variable secured.
 
 ### Optional ODP infrastructure overrides
 
@@ -275,7 +276,7 @@ ODP has its own Compose network, generated container names, and project-scoped `
 2. Point `titilerodp.strayos.com` at the new VM and allow public ports 80/443. The verified NSG currently allows public 443; add an inbound TCP 80 rule for the HTTP-to-HTTPS redirect. Nginx terminates TLS and supports HTTP/2.
 3. Install the certificate and key at `/etc/ssl/strayos/strayos.com.crt` and `/etc/ssl/strayos/star_strayos_com.key`. The certificate must cover `titilerodp.strayos.com`; the directory is mounted read-only into Nginx.
 4. Set `GRAFANA_ADMIN_PASSWORD` in `~/strayos-titiler/.env`. `TITILER_IMAGE` defaults to `strayos1/strayos-titiler:app`; the pipeline explicitly selects the image it publishes.
-5. Configure the Bitbucket **ODP** deployment environment, `ODP_TITILER_SERVER`, and `ODP_TITILER_SSH_USER` from **CI/CD Pipeline** above, reusing `SSH_KEY_B64`. Resource group, NSG, and private IP use the embedded defaults unless their optional overrides are set. The pipeline temporarily allows runner SSH to the ODP private IP and removes that rule on exit.
+5. Configure the repository variables `ODP_TITILER_SERVER` and `ODP_TITILER_SSH_USER` from **CI/CD Pipeline** above, reusing `SSH_KEY_B64`. Resource group, NSG, and private IP use the embedded defaults unless their optional overrides are set. The pipeline temporarily allows runner SSH to the ODP private IP and removes that rule on exit.
 
 For a manual initial start from the repository directory:
 

@@ -140,7 +140,6 @@ definitions:
 
     - step: &deploy-odp
         name: Deploy Changes to ODP VM
-        deployment: ODP
         concurrency-group: titiler-odp-deploy
         script:
           - |
