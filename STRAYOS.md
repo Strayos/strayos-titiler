@@ -79,7 +79,8 @@ Do not add `--volumes` to the normal `down` command; the named volume retains
 the edge Nginx cache. The two workers have a combined 2 GiB `GDAL_CACHEMAX`
 ceiling and approximately 382 MiB of process-wide `/vsicurl/` cache, in
 addition to Python, native-library, and request memory. Their combined
-container memory limit is 8 GiB by default.
+container memory limit is 8 GiB by default. Edge Nginx has a separate 128 MiB
+shared-memory response-cache key index.
 
 ## Stress Testing
 
@@ -269,6 +270,7 @@ ODP is a standalone deployment reached explicitly at `https://titilerodp.strayos
 | Alloy configuration | `dockerfiles/alloy/config-odp.alloy` |
 | Grafana | `https://titilerodp.strayos.com/grafana/` |
 | Nginx disk cache | 21 GiB, 48-hour successful-response TTL |
+| Nginx cache-key index | 128 MiB shared by all cache-enabled endpoints |
 | Prometheus / Loki retention | 7 days |
 
 VM sizing, managed-disk capacity, SSH username, private IP, and NSG attachment were verified with Azure CLI. SSH confirmed Ubuntu 24.04.4 LTS and a root filesystem reported as `61G` by `df -h`; Azure exposes a 64 GiB managed OS disk.
@@ -328,11 +330,35 @@ Normal `down` retains ODP's cache and monitoring volumes. Main-branch deployment
 
 ### Nginx Response Cache
 
-Nginx uses the persistent `nginx-cache` volume for a shared 21 GiB cache within each deployment. It caches tiles and successful `GET`/`HEAD` requests to `/cog/statistics` and `/cog/validate` (including COG validation responses with `"COG": false`); STAC statistics and GeoJSON `POST /cog/statistics` are not cached. All Strayos Nginx configurations use the same 48-hour successful-response TTL and cache lock for COG validation. Cache keys include the scheme, host, path, and query string, so different raster URLs or validation options remain separate. Failed HTTP responses are not cached.
+Nginx uses the persistent `nginx-cache` volume for a shared 21 GiB disk cache and a separate 128 MiB shared-memory cache-key index within each deployment. It caches tiles and successful `GET`/`HEAD` requests to `/cog/statistics` and `/cog/validate` (including COG validation responses with `"COG": false`); STAC statistics and GeoJSON `POST /cog/statistics` are not cached. All Strayos Nginx configurations use the same index size, 48-hour successful-response TTL, and cache lock for COG validation. Cache keys include the scheme, host, path, and query string, so different raster URLs or validation options remain separate. Failed HTTP responses are not cached.
+
+The zone name `tiles` does not restrict the cache to tile endpoints. The tile, COG statistics, and COG validation locations all use `proxy_cache tiles`, sharing one key-index capacity and one disk-cache budget within that deployment. There is no separate allocation or reserved quota per endpoint; the path in the cache key keeps their entries distinct. The memory index stores keys and metadata, while response bodies are stored on disk.
 
 Production, ODP, development, and Edge Nginx include `X-TiTiler-Cache` on responses for cache-enabled requests. It exposes Nginx's `$upstream_cache_status` (for example, `MISS` when fetched from the backend, `HIT` when served from the cache, or `STALE` when serving an expired entry). Nginx omits the header when there is no cache status, such as on non-cached endpoints. This diagnostic header does not change caching behavior and can be inspected in browser developer tools; `Cache-Control` alone does not identify a cache hit.
 
-Successful GET responses advertise a 90-minute browser lifetime through `Cache-Control`. Nginx preserves that client header but keeps successful cached responses for 48 hours. Entries inactive for 48 hours or displaced as the cache approaches 21 GiB may be removed earlier. The volume survives normal container recreation but not volume deletion, explicit purging, or disk loss.
+Successful GET responses advertise a 90-minute browser lifetime through `Cache-Control`. Nginx preserves that client header but marks successful cached responses fresh for 48 hours. Entries inactive for 48 hours or displaced as the disk cache approaches 21 GiB or the key index fills may be removed earlier. The volume survives normal container recreation but not volume deletion, explicit purging, or disk loss.
+
+### Capacity Planning: 500,000 Requests per Working Day
+
+Size for distinct cache keys rather than total requests: repeat requests for the same key reuse an entry. The planning case is 500,000 new cacheable keys per working day, or approximately 1 million across a 48-hour window. Changes to raster URLs, rendering parameters, or query-string ordering create separate entries with the current cache key.
+
+[Nginx documents approximately 8,000 keys per MiB](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_cache_path). The configured capacities include tiles, statistics, and validation together:
+
+| Deployment | Cache-key index | Approximate combined key capacity |
+| --- | --- | --- |
+| Production, ODP, development, and edge | `keys_zone=tiles:128m` | 1,024,000 keys |
+
+The 128 MiB index is sized above the roughly 650,000 entries that fill the 21 GiB disk cache at the observed production average. The previous 10 MiB zone held roughly 80,000 keys; 32 MiB would hold only about 256,000. Each zone is shared within its Nginx deployment, not allocated per TiTiler worker or per endpoint.
+
+The capacity review on Oct-16-2026 analyzed 134,849 distinct successful tile URLs from `stress-test/output_peak_load/results_*.csv`, excluding failed responses and deduplicating repeated URLs. Those saved tiles use `scale=1`. Disk estimates add 1 KiB per entry for cache metadata and HTTP headers, round each file to 4 KiB filesystem blocks, and allow 20 MiB for cache directories. A sample of 500 live production cache files measured average metadata/header overhead of 958 bytes.
+
+| Workload basis | 100,000 distinct entries | 500,000 distinct entries | 1 million distinct entries |
+| --- | --- | --- | --- |
+| Combined saved stress-test mix | 1.79 GiB | 8.9 GiB | 17.7 GiB |
+| Largest average-size saved orthophoto workload | 2.21 GiB | 11.0 GiB | 22.0 GiB |
+| Observed production disk cost per entry | 3.24 GiB | 16.2 GiB | 32.4 GiB |
+
+These are workload-dependent disk estimates, not entry-count guarantees. The production snapshot contained 71,207 cache files using 2.30 GiB including directories; ODP had no cached response files. At that production average, the 21 GiB disk limit holds roughly 650,000 entries. It can accommodate the one-day planning case, but a million-entry two-day set would require about 32.4 GiB before growth headroom. Nginx evicts least-recently-used entries when disk capacity is reached, even if their 48-hour freshness TTL has not expired. Retaining that full two-day production-sized set requires additional cache storage and VM disk-capacity planning. Larger tile scales or different response mixes require remeasurement.
 
 ### GDAL Cache Behavior
 
@@ -346,6 +372,7 @@ The six-worker production budget is:
 6 backends * 1024 MiB GDAL_CACHEMAX = ~6 GiB decoded-block ceiling (not startup allocation)
 6 backends * 200,000,000-byte /vsicurl/ cache = ~1.12 GiB total
 No per-file VSI_CACHE overhead
+Nginx response-cache key index = 128 MiB shared within this deployment
 4 GiB hard memory limit per backend container
 32 GiB total RAM shared by GDAL cache, Python, Nginx, OS, request buffers, Azure Blob connections
 ```
