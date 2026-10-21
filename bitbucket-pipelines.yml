@@ -13,7 +13,17 @@ definitions:
         image: docker:27.3.1-dind
         script:
           - IMAGE_NAME=strayos-titiler
-          - TAG="app"
+          - |
+            case "$BITBUCKET_BRANCH" in
+              staging)
+                TAG="staging-${BITBUCKET_COMMIT:?Set BITBUCKET_COMMIT}"
+                CACHE_TAG="staging"
+                ;;
+              *)
+                TAG="app"
+                CACHE_TAG="app"
+                ;;
+            esac
           - IMAGE_REPO="${DOCKER_HUB_USER}/${IMAGE_NAME}"
           - export PATH=/usr/bin:$PATH
           - export DOCKER_BUILDKIT=1
@@ -26,8 +36,13 @@ definitions:
             set +x
             printf '%s\n' "${DOCKER_HUB_TOKEN}" | docker login -u "${DOCKER_HUB_USER}" --password-stdin
             if [ "$XTRACE_WAS_ON" = "1" ]; then set -x; fi
-          - docker build -f dockerfiles/Dockerfile . --pull --build-arg BUILDKIT_INLINE_CACHE=1 --cache-from "${IMAGE_REPO}:${TAG}" --tag "${IMAGE_REPO}:${TAG}"
+          - docker build -f dockerfiles/Dockerfile . --pull --build-arg BUILDKIT_INLINE_CACHE=1 --cache-from "${IMAGE_REPO}:${CACHE_TAG}" --tag "${IMAGE_REPO}:${TAG}"
           - docker push "${IMAGE_REPO}:${TAG}"
+          - |
+            if [ "$BITBUCKET_BRANCH" = "staging" ]; then
+              docker tag "${IMAGE_REPO}:${TAG}" "${IMAGE_REPO}:staging"
+              docker push "${IMAGE_REPO}:staging"
+            fi
 
     - step: &deploy
         name: Deploy Changes to VM
@@ -51,7 +66,7 @@ definitions:
             set -e
 
             IMAGE_NAME="strayos-titiler"
-            TAG="app"
+            TAG="${DEPLOY_IMAGE_TAG:-app}"
             IMAGE_REPO="${DOCKER_HUB_USER}/${IMAGE_NAME}"
             TITILER_IMAGE="${IMAGE_REPO}:${TAG}"
             COMPOSE_FILE="${DEPLOY_COMPOSE_FILE:-docker-compose-strayos-deploy.yml}"
@@ -174,8 +189,35 @@ definitions:
           - *select-azure-subscription
           - *deploy-vm
 
+    - step: &deploy-staging
+        name: Deploy Changes to Staging VM
+        concurrency-group: titiler-staging-deploy
+        script:
+          - |
+            set -e
+            : "${SSH_KEY_B64:?Set SSH_KEY_B64}"
+
+            export TITILER_SERVER="${STAGING_TITILER_SERVER:-titilerstaging.strayos.com}"
+            export TITILER_SSH_USER="${STAGING_TITILER_SSH_USER:-ubuntu}"
+            export DEPLOY_RESOURCE_GROUP="${TITILER_STAGING_RESOURCE_GROUP:-TiTiler}"
+            export DEPLOY_NSG_NAME="${TITILER_STAGING_NSG_NAME:-TiTiler-Staging-nsg}"
+            export DEPLOY_PRIVATE_IP="${TITILER_STAGING_PRIVATE_IP:-172.16.0.4}"
+            export DEPLOY_COMPOSE_FILE=docker-compose-strayos-deploy-staging.yml
+            export DEPLOY_WORKER_COUNT=3
+            export DEPLOY_IMAGE_TAG="staging-${BITBUCKET_COMMIT:?Set BITBUCKET_COMMIT}"
+          - *install-deploy-tools
+          - *install-azure-cli
+          - *azure-login
+          - *select-azure-subscription
+          - *deploy-vm
+
 pipelines:
   branches:
+    staging:
+      - step:
+          <<: *publish
+          name: Build and Push Staging TiTiler Image
+      - step: *deploy-staging
     main:
       - step: *publish
       - parallel:
