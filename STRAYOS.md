@@ -13,6 +13,7 @@ This application is normally deployed as a container. When another application o
 * Start the Strayos TiTiler stack with `docker-compose-strayos-dev.yml` when you want to run code from this project instead of an installed package. Development Nginx uses `dockerfiles/nginx-strayos-dev.conf` and serves HTTP on `http://localhost` without requiring the production TLS certificates.
 * Production deploys use `docker-compose-strayos-deploy.yml`, with the image supplied through `TITILER_IMAGE` and defaulting to `strayos1/strayos-titiler:app`.
 * The standalone ODP deployment at `https://titilerodp.strayos.com` uses `docker-compose-strayos-deploy-odp.yml`. It runs three backends on a dedicated 4-vCPU, 16-GiB VM; see **Azure Infrastructure: ODP** below.
+* Staging at `https://titilerstaging.strayos.com` uses `docker-compose-strayos-deploy-staging.yml`. Its pipeline deploys `:staging-<full-commit-sha>` images, separate from production's `:app`; `:staging` remains a convenience/bootstrap alias. Its three-worker stack mirrors ODP; see **Azure Infrastructure: Staging** below.
 
 ## On-Prem Edge Deployment
 
@@ -93,15 +94,36 @@ shared-memory response-cache key index.
 
 ### Branch behavior
 
-- `main` builds and pushes the Docker image, then deploys the existing production VM and the standalone ODP VM in parallel.
+- `main` builds and pushes the `:app` image, then deploys the existing production VM and the standalone ODP VM in parallel.
+- `staging` builds and pushes `:staging-${BITBUCKET_COMMIT}`, updates the `:staging` convenience alias, then deploys that exact commit-tagged image to only the staging VM. It never publishes `:app` or runs the production/ODP deployment steps.
+- `add-titiler-staging` is the implementation/review branch for this setup, intended to merge into `main`. It is not the deployment selector and has no automatic pipeline.
 - Other branches have no configured pipeline.
 - Pipelines use a clone depth of `1`.
 
+### Selecting a commit for staging
+
+The repository's default branch is named `main`, not `master`. Merge `add-titiler-staging` into `main` through the normal review process. Keep `staging` as a movable deployment branch rather than developing the setup directly on it.
+
+After the merge, move the remote `staging` branch to the commit you want to test. A **remote branch update** triggers Bitbucket to build the source at that commit and deploy its `:staging-<full-commit-sha>` image. A local reset alone does not deploy anything. This can be done without resetting a local working tree:
+
+```bash
+git fetch bitbucket
+TARGET_COMMIT="replace-with-full-commit-sha"
+git show "${TARGET_COMMIT}:bitbucket-pipelines.yml"
+git push --force-with-lease bitbucket "${TARGET_COMMIT}:refs/heads/staging"
+```
+
+- The target commit must contain this staging pipeline and its Compose/Nginx/monitoring files. Commits predating this setup cannot deploy simply by moving `staging`, because Bitbucket reads its pipeline configuration from the selected commit.
+- The branch policy must permit creating/updating `staging`, including non-fast-forward updates for rollbacks. Use `--force-with-lease`, not an unconditional force push; review any lease rejection before retrying.
+- Cancel or wait for earlier staging pipelines before moving the branch again. The deployment concurrency group serializes deploy steps but does not cancel older builds or queued deployments. Commit-specific image tags prevent one build from pulling a different commit's mutable alias.
+- Pushing an unchanged branch tip is a no-op and does not create a new pipeline. Rerun that commit's staging pipeline in Bitbucket when redeployment is needed.
+- Updating only `staging` never triggers the `main` production/ODP pipeline. Merging into `main` still triggers its existing production and ODP deployment behavior.
+
 ### Deploy step
 
-- Uses `atlassian/default-image:4`. Production uses `concurrency-group: titiler-app-deploy`; ODP uses `concurrency-group: titiler-odp-deploy` to serialize deployments to each VM.
-- The two deployment steps run in a `parallel` group after image publication succeeds. `fail-fast: false` lets the other deployment finish when one fails; a failure still fails the overall pipeline. Each target's concurrency group continues to prevent overlapping deploys to that VM.
-- Production uses the existing Bitbucket `Production` deployment environment. ODP runs as a regular pipeline step with repository/workspace variables and its own concurrency group; it requires no additional Bitbucket deployment environment.
+- Uses `atlassian/default-image:4`. Production uses `concurrency-group: titiler-app-deploy`; ODP uses `concurrency-group: titiler-odp-deploy`; staging uses `concurrency-group: titiler-staging-deploy` to serialize deployments to each VM.
+- On `main`, the two deployment steps run in a `parallel` group after image publication succeeds. `fail-fast: false` lets the other deployment finish when one fails; a failure still fails the overall pipeline. On `staging`, only the staging deploy runs after its image publication succeeds. Each target's concurrency group prevents overlapping deploys to that VM.
+- Production uses the existing Bitbucket `Production` deployment environment. ODP and staging run as regular pipeline steps with repository/workspace variables and their own concurrency groups; neither requires an additional Bitbucket deployment environment.
 - Authenticates to Azure with the service-principal variables listed below.
 - Temporarily permits SSH from the runner's public IPv4 address, syncs the repository with `rsync`, deploys the services, and removes the NSG rule during cleanup.
 - Authenticates Docker Hub separately on each target VM as its SSH user before syncing or pulling images. The token is sent through SSH stdin with shell tracing disabled.
@@ -111,18 +133,20 @@ shared-memory response-cache key index.
 | Variable | Scope | Purpose |
 | --- | --- | --- |
 | `DOCKER_HUB_USER` | Workspace | Docker Hub username/namespace used for the image repository. |
-| `DOCKER_HUB_TOKEN` | Workspace | Docker Hub token used for image publication and authenticated pulls on both deployment VMs. |
+| `DOCKER_HUB_TOKEN` | Workspace | Docker Hub token used for image publication and authenticated pulls on each deployment VM. |
 | `DEPLOY_AZURE_ID` | Workspace | Azure service-principal client/application ID. |
 | `DEPLOY_AZURE_PASS` | Workspace | Azure service-principal secret. |
 | `AZURE_TENANT_ID` | Workspace | Azure tenant ID for service-principal login. |
 | `AZURE_SUBSCRIPTION_ID` | Workspace | Azure subscription selected before NSG changes. |
-| `SSH_KEY_B64` | Repository | Shared base64-encoded private SSH key used for both production and ODP VM access. |
+| `SSH_KEY_B64` | Repository | Shared base64-encoded private SSH key used for production, ODP, and staging VM access. |
 | `TITILER_SERVER` | Repository | Public host or IP for the production VM. |
 | `TITILER_SSH_USER` | Repository | SSH user for the production VM. |
 | `ODP_TITILER_SERVER` | Repository | Public host or IP for the standalone ODP VM. |
 | `ODP_TITILER_SSH_USER` | Repository | SSH user for the ODP VM. |
 
 Configure `ODP_TITILER_SERVER` and `ODP_TITILER_SSH_USER` as repository variables before running the main-branch pipeline. ODP reuses the repository's `SSH_KEY_B64` and the workspace Docker Hub and Azure login variables; the service principal needs permission to manage rules on the ODP NSG. Keep the shared SSH key variable secured.
+
+Staging reuses `SSH_KEY_B64` and the existing workspace Docker Hub and Azure variables. Its verified SSH host/user and Azure infrastructure have embedded defaults, so no new pipeline variables or Bitbucket deployment environment are required. Bitbucket supplies `BITBUCKET_COMMIT` automatically. The Azure service principal must be able to manage rules on `TiTiler-Staging-nsg` in `TiTiler`; the Docker Hub token must be allowed to publish `:staging` and `:staging-<full-commit-sha>` tags in the existing image repository.
 
 ### Optional ODP infrastructure overrides
 
@@ -134,13 +158,25 @@ Like production, ODP has embedded Azure infrastructure defaults. These values we
 | `TITILER_ODP_NSG_NAME` | `Titiler-Oman-nsg` | NIC-level NSG controlling SSH access to the ODP VM. |
 | `TITILER_ODP_PRIVATE_IP` | `172.16.0.4` | VM private IP used as the SSH NSG rule destination. |
 
+### Optional staging overrides
+
+| Variable | Embedded default | Purpose |
+| --- | --- | --- |
+| `STAGING_TITILER_SERVER` | `titilerstaging.strayos.com` | Staging SSH host. |
+| `STAGING_TITILER_SSH_USER` | `ubuntu` | Staging SSH user. |
+| `TITILER_STAGING_RESOURCE_GROUP` | `TiTiler` | Azure resource group containing the staging NSG. |
+| `TITILER_STAGING_NSG_NAME` | `TiTiler-Staging-nsg` | NIC-level NSG controlling staging SSH access. |
+| `TITILER_STAGING_PRIVATE_IP` | `172.16.0.4` | Staging VM private IP used as the SSH NSG rule destination. |
+
 ### Deployment behavior
 
-The pipeline pushes `${DOCKER_HUB_USER}/strayos-titiler:app` once, then starts the two deployment steps in parallel. After SSH is ready, each step logs into Docker Hub on its target VM using `DOCKER_HUB_USER` and `DOCKER_HUB_TOKEN`, then syncs the repository to `~/strayos-titiler` without overwriting that VM's `.env`. The remote login uses `--password-stdin` over SSH with runner shell tracing disabled, and Docker stores the login for the target SSH user. Prometheus, Loki, and Alloy are recreated to reload bind-mounted configuration. Within each VM, backends are replaced sequentially (six on production, three on ODP), and Nginx is recreated last so its upstreams resolve and its file bind mount follows the inode replaced by `rsync`. The two deployment steps reuse the same YAML-anchored Azure/SSH deployment commands, with ODP explicitly selecting its own Compose file, worker count, and connection/NSG variables. See `bitbucket-pipelines.yml` for the exact sequence.
+On `main`, the pipeline pushes `${DOCKER_HUB_USER}/strayos-titiler:app` once, then starts the two deployment steps in parallel. On `staging`, it builds and publishes `${DOCKER_HUB_USER}/strayos-titiler:staging-${BITBUCKET_COMMIT}`, updates the `:staging` alias for build caching/manual convenience, and deploys only `docker-compose-strayos-deploy-staging.yml`, selecting three workers and the staging SSH/NSG settings. The shared deployment commands default to `:app`; only the staging step exports `DEPLOY_IMAGE_TAG=staging-${BITBUCKET_COMMIT}`. Deployments use the commit-specific tag, not whichever image most recently overwrote the `:staging` alias.
 
-The initial ODP pull failed because the new `ubuntu` account had no Docker Hub login. Production's `azureuser` already had working registry credentials. A login performed only inside the image-build runner does not authenticate either VM; both deploy steps now establish their own remote login. An absent or rejected token stops the deployment before repository sync or container changes, while the EXIT trap removes the temporary SSH NSG rule.
+After SSH is ready, each step logs into Docker Hub on its target VM using `DOCKER_HUB_USER` and `DOCKER_HUB_TOKEN`, then syncs the repository to `~/strayos-titiler` without overwriting that VM's `.env`. The remote login uses `--password-stdin` over SSH with runner shell tracing disabled, and Docker stores the login for the target SSH user. Prometheus, Loki, and Alloy are recreated to reload bind-mounted configuration. Within each VM, backends are replaced sequentially (six on production, three each on ODP and staging), and Nginx is recreated last so its upstreams resolve and its file bind mount follows the inode replaced by `rsync`. All targets reuse the same YAML-anchored Azure/SSH deployment commands. See `bitbucket-pipelines.yml` for the exact sequence.
 
-Parallel steps are enabled through YAML and require two available workspace concurrent-step slots; no extra Bitbucket enable switch or ODP deployment environment is needed. Workspace concurrency limits apply across all running pipelines. Build minutes are the sum of both steps' execution time, even though their elapsed time overlaps. See Bitbucket's [parallel step options](https://support.atlassian.com/bitbucket-cloud/docs/parallel-step-options/).
+The initial ODP pull failed because the new `ubuntu` account had no Docker Hub login. Production's `azureuser` already had working registry credentials. A login performed only inside the image-build runner does not authenticate a VM; every deploy step establishes its own remote login. An absent or rejected token stops the deployment before repository sync or container changes, while the EXIT trap removes the temporary SSH NSG rule.
+
+Main-branch parallel steps are enabled through YAML and require two available workspace concurrent-step slots; no extra Bitbucket enable switch or ODP deployment environment is needed. Staging has sequential build/deploy steps and needs one slot at a time. Workspace concurrency limits apply across all running pipelines. Build minutes are the sum of both parallel steps' execution time, even though their elapsed time overlaps. See Bitbucket's [parallel step options](https://support.atlassian.com/bitbucket-cloud/docs/parallel-step-options/).
 
 ## Azure Infrastructure: Production
 
@@ -188,9 +224,9 @@ titiler_backends
   -> titiler-1..6:8000  # one Uvicorn worker per container
 ```
 
-Each backend is an independent process with its own Rasterio/GDAL state and cache; memory is not shared between workers. Development, production, and ODP limit each backend container to 4 GiB. Backends use `/healthz` healthchecks, while Nginx uses `nginx -t`. The public health response includes installed TiTiler and geospatial library versions.
+Each backend is an independent process with its own Rasterio/GDAL state and cache; memory is not shared between workers. Development, production, ODP, and staging limit each backend container to 4 GiB. Backends use `/healthz` healthchecks, while Nginx uses `nginx -t`. The public health response includes installed TiTiler and geospatial library versions.
 
-Production and ODP support HTTP/2 for multiplexed browser tile requests, fall back to HTTP/1.1, and redirect port 80 to HTTPS. Local development remains HTTP-only.
+Production, ODP, and staging support HTTP/2 for multiplexed browser tile requests, fall back to HTTP/1.1, and redirect port 80 to HTTPS. Local development remains HTTP-only.
 
 ### Observability and Logging
 
@@ -214,7 +250,7 @@ All services use Docker's `local` logging driver with file rotation:
 
 Worst-case Docker local-log usage is approximately 1.23 GB. These rotated binary logs live under `/var/lib/docker/containers/<id>/local-logs/` and are read with `docker logs`. Loki's indexed events are stored separately in `loki-data`. Prometheus and Loki retain data for 7 days; Grafana and Alloy use `grafana-data` and `alloy-data`. Grafana provisioning files are under `dockerfiles/grafana/`.
 
-Production, development, and ODP Nginx emit JSON for completed TiTiler API requests, which Alloy ships asynchronously to Loki. Events contain the requester IP, normalized endpoint, full client-facing `request_url` (`scheme://Host/path?query`), status, request time, response size, upstream details, and cache status. Full URLs include raster query strings and may contain signed credentials; they appear in the Docker access logs and Loki's 7-day store, accessible to Grafana users. URLs from before this field was deployed are not recoverable from older access events. Grafana, metrics, healthcheck, and production/ODP HTTP redirect requests are excluded. Client IP and full URL remain parsed JSON fields rather than indexed Loki labels to avoid high-cardinality streams. The independent edge Nginx configuration still omits query strings and has no Grafana stack.
+Production, development, ODP, and staging Nginx emit JSON for completed TiTiler API requests, which Alloy ships asynchronously to Loki. Events contain the requester IP, normalized endpoint, full client-facing `request_url` (`scheme://Host/path?query`), status, request time, response size, upstream details, and cache status. Full URLs include raster query strings and may contain signed credentials; they appear in the Docker access logs and Loki's 7-day store, accessible to Grafana users. URLs from before this field was deployed are not recoverable from older access events. Grafana, metrics, healthcheck, and production/ODP/staging HTTP redirect requests are excluded. Client IP and full URL remain parsed JSON fields rather than indexed Loki labels to avoid high-cardinality streams. The independent edge Nginx configuration still omits query strings and has no Grafana stack.
 
 Dashboard traffic totals include Nginx cache hits, while Starlette metrics include only backend work. Cached delivery includes `HIT`, `STALE`, `UPDATING`, and `REVALIDATED`; backend delivery includes `MISS`, `BYPASS`, `EXPIRED`, and uncached upstream requests. Client-IP panels support up to 10,000 result series per query, retaining a safety bound above Loki's default of 500.
 
@@ -222,7 +258,7 @@ The **API Endpoints (Selected Time Range)** table shows all observed endpoint gr
 
 The **Top 20 Slowest Requests (>1s)** table ranks individual Nginx access events with client-facing `request_time` strictly greater than 1 second across the selected Grafana range. Its instant LogQL query parses and numerically filters duration *before* constructing a temporary per-event key from the nanosecond Loki timestamp and log line, unwraps duration, and applies `topk(20)` in Loki before Grafana receives the rows. Fewer than 20 qualifying requests yield fewer rows even if faster requests exist. Grafana converts the returned labeled series into table rows, sorts by duration, and hides the temporary event key. Equal-duration requests remain separate, and the panel does not depend on Grafana's log-row retrieval limit. It displays the logged completion time, normalized endpoint, full request URL (with an inspectable cell for long URLs), method, client IP, status, delivery source, and duration. Older retained events lack the full URL. The ranking covers only Loki's retained 7 days; ranges that create over 10,000 *qualifying* per-event series (or hit other query limits) still fail explicitly. `topk(20)` alone does not reduce cardinality before Loki applies the series limit. The per-event key is created at query time and is not an indexed Loki label.
 
-Production and ODP expose Grafana only through `/grafana/`; Prometheus and Loki remain internal. Anonymous Grafana access is disabled by default. Set `GRAFANA_ADMIN_PASSWORD` and, only when needed, `GRAFANA_ANONYMOUS_ENABLED=true` in each VM's `.env`.
+Production, ODP, and staging expose Grafana only through `/grafana/`; Prometheus and Loki remain internal. Anonymous Grafana access is disabled by default. Set `GRAFANA_ADMIN_PASSWORD` and, only when needed, `GRAFANA_ANONYMOUS_ENABLED=true` in each VM's `.env`. Staging requires a nonempty admin password instead of falling back to the legacy default.
 
 ### Production Environment Variables
 
@@ -282,7 +318,7 @@ ODP has its own Compose network, generated container names, and project-scoped `
 ### ODP VM setup
 
 1. Install Docker with the Compose plugin using `sudo bash scripts/install-docker-ubuntu.sh ubuntu` on the VM, or the SSH command below. The installer also ensures `rsync` is installed and adds `ubuntu` to the Docker group. The pipeline syncs the repository into `~/strayos-titiler`.
-2. Point `titilerodp.strayos.com` at the new VM and allow public ports 80/443. The verified NSG currently allows public 443; add an inbound TCP 80 rule for the HTTP-to-HTTPS redirect. Nginx terminates TLS and supports HTTP/2.
+2. Point `titilerodp.strayos.com` at the VM and allow public ports 80/443. Both inbound rules were verified on Oct-21-2026. Nginx terminates TLS and supports HTTP/2.
 3. Install the certificate and key at `/etc/ssl/strayos/strayos.com.crt` and `/etc/ssl/strayos/star_strayos_com.key`. The certificate must cover `titilerodp.strayos.com`; the directory is mounted read-only into Nginx.
 4. Set `GRAFANA_ADMIN_PASSWORD` in `~/strayos-titiler/.env`. `TITILER_IMAGE` defaults to `strayos1/strayos-titiler:app`; the pipeline explicitly selects the image it publishes.
 5. Configure the repository variables `ODP_TITILER_SERVER` and `ODP_TITILER_SSH_USER` from **CI/CD Pipeline** above, reusing `SSH_KEY_B64`. Resource group, NSG, and private IP use the embedded defaults unless their optional overrides are set. The pipeline temporarily allows runner SSH to the ODP private IP and removes that rule on exit.
@@ -326,6 +362,120 @@ docker compose -f docker-compose-strayos-deploy-odp.yml down
 
 Normal `down` retains ODP's cache and monitoring volumes. Main-branch deployments update production and ODP in parallel, replacing each VM's workers sequentially and recreating its Nginx last.
 
+## Azure Infrastructure: Staging
+
+Staging is a standalone deployment at `https://titilerstaging.strayos.com`. It mirrors ODP's three-worker topology, GDAL settings, 4 GiB backend limits, 21 GiB response cache, 128 MiB cache-key index, 125-second tile read-idle timeout, disabled tile retries, seven-day monitoring retention, and provisioned Grafana dashboards. The `staging` branch selects the source commit and deploys its `:staging-<full-commit-sha>` image, isolated from production/ODP's `:app` tag.
+
+| Resource | Staging configuration |
+| --- | --- |
+| Resource group | `TiTiler` |
+| VM name | `TiTiler-Staging` |
+| VM size | `Standard_D4as_v5`: 4 vCPUs, 16 GiB RAM |
+| Azure region | `eastus2` |
+| VM OS | Ubuntu 26.04 LTS, x86_64 |
+| VM OS disk | 128 GiB Azure managed disk, `StandardSSD_LRS`; root filesystem reports `124G` |
+| VM private IP | `172.16.0.4` on a separate VNet from ODP |
+| NSG | `TiTiler-Staging-nsg` at NIC level; no subnet NSG |
+| SSH | `ssh Titiler-Staging`, user `ubuntu`, shared production/ODP key |
+| Compose file | `docker-compose-strayos-deploy-staging.yml` |
+| Default Compose project | `strayos-titiler-staging` |
+| TiTiler backends | `titiler-1`, `titiler-2`, `titiler-3`; one Uvicorn worker each |
+| Nginx configuration | `dockerfiles/nginx-strayos-staging.conf` |
+| Prometheus configuration | `dockerfiles/prometheus-staging.yml` |
+| Alloy configuration | `dockerfiles/alloy/config-staging.alloy` |
+| Grafana | `https://titilerstaging.strayos.com/grafana/` |
+| Pipeline TiTiler image | `strayos1/strayos-titiler:staging-<full-commit-sha>` |
+| Default/manual-bootstrap image | `strayos1/strayos-titiler:staging` |
+
+Staging has its own Compose network, generated container names, and project-scoped `nginx-cache`, `prometheus-data`, `grafana-data`, `loki-data`, and `alloy-data` volumes. Its Nginx has the `com.strayos.stack=staging` label; its Alloy configuration selects only that stack's Nginx container. Loki configuration and Grafana provisioning/dashboard files are shared read-only with the other deployment definitions, but their runtime data stores are independent.
+
+### Staging access and health checks
+
+| Endpoint | URL / expected behavior |
+| --- | --- |
+| Health | `https://titilerstaging.strayos.com/healthz` returns HTTP 200 with library versions. |
+| API documentation | `https://titilerstaging.strayos.com/api.html` |
+| OpenAPI schema | `https://titilerstaging.strayos.com/api`; not `/openapi.json`. |
+| Grafana | `https://titilerstaging.strayos.com/grafana/` requires login; the admin password is in the VM's protected `.env`. |
+| HTTP | `http://titilerstaging.strayos.com/` redirects to HTTPS. |
+| Metrics | Public `/metrics` returns HTTP 403; Prometheus scrapes workers over the private Compose network. |
+
+From the local workstation:
+
+```bash
+curl --fail --http2 https://titilerstaging.strayos.com/healthz
+ssh Titiler-Staging 'cd ~/strayos-titiler && docker compose -f docker-compose-strayos-deploy-staging.yml ps'
+ssh Titiler-Staging 'systemctl show nginx.service -p LoadState -p ActiveState -p UnitFileState'
+```
+
+The host Nginx unit should report `LoadState=masked`, `ActiveState=inactive`, and `UnitFileState=masked`. This is intentional: the Compose Nginx container alone serves HTTPS and owns ports 80/443. Do not start a second host reverse proxy.
+
+### Staging bootstrap and deployment
+
+1. Install Docker with `ssh Titiler-Staging 'sudo -n bash -s -- ubuntu' < scripts/install-docker-ubuntu.sh`. On Oct-21-2026, Docker Engine **29.9.2**, Compose **5.6.0**, and Buildx **0.38.1** were installed. A fresh SSH session as `ubuntu` confirmed Docker access without `sudo`.
+2. Keep DNS pointing `titilerstaging.strayos.com` to the staging VM. Its NIC-level NSG permits public TCP 443 and now also TCP 80 through the `HTTP` rule at priority `320`. SSH remains allowlisted; pipeline deploys temporarily allow only their runner's IPv4 address.
+3. TLS files are `/etc/ssl/strayos/strayos.com.crt` and `/etc/ssl/strayos/star_strayos_com.key`, mounted read-only into Nginx. The trusted wildcard certificate matches ODP's live certificate, covers staging, and expires Jan-30-2027. The certificate is `root:root 0644`; its matching unencrypted private key is `root:root 0600`, corrected from the initial world-readable permissions.
+4. Keep `GRAFANA_ADMIN_PASSWORD` in `~/strayos-titiler/.env`, owned by `ubuntu` with mode `0600`. Bootstrap created a random password without logging it. The Compose file refuses to render if this variable is missing or empty. Deployment sync explicitly preserves `.env`.
+5. The host-installed `nginx.service` is stopped, disabled, and masked; containerized Nginx alone owns ports 80/443 and TLS. The host package and placeholder site configuration remain available for rollback, but must not run alongside the container. The cutover happened only after images, backend healthchecks, monitoring services, and the container's Nginx configuration passed. To restore the placeholder site, first stop the Compose Nginx, then run `sudo systemctl unmask nginx` followed by `sudo systemctl enable --now nginx`.
+6. Merge the reviewed `add-titiler-staging` implementation branch into `main`, then move/push the remote `staging` branch to a selected commit containing this setup, as described under **Selecting a commit for staging**. The dedicated staging pipeline reuses existing secured credentials, verifies Docker Hub login on the VM, and deploys that commit's three backends sequentially before recreating Nginx. No production or ODP deploy runs on the `staging` branch. The defaults and optional overrides are listed under **CI/CD Pipeline**.
+
+The initial bootstrap image was built directly on the staging VM from the working tree with `dockerfiles/Dockerfile` and the frozen `uv.lock`, tagged locally as `strayos1/strayos-titiler:staging`. It was not pushed to Docker Hub, and no registry credentials were copied from another VM. Until the first staging pipeline publishes its images, use the already-built local image with `docker compose -f docker-compose-strayos-deploy-staging.yml up -d --wait --pull never` rather than pulling the unpublished tag. The first pipeline run replaces this bootstrap image with a registry-published commit-tagged staging build; its Bitbucket credentials and service-principal permissions still need end-to-end verification.
+
+For a manual deployment after a commit-specific image has been published, run from `~/strayos-titiler` on the staging VM, explicitly selecting the same commit as the synced deployment files:
+
+```bash
+COMMIT_SHA="replace-with-full-commit-sha"
+export TITILER_IMAGE="strayos1/strayos-titiler:staging-${COMMIT_SHA}"
+docker login --username strayos1
+docker compose -f docker-compose-strayos-deploy-staging.yml config --quiet
+docker compose -f docker-compose-strayos-deploy-staging.yml pull
+docker compose -f docker-compose-strayos-deploy-staging.yml up -d --wait
+```
+
+Inspect or stop only staging with:
+
+```bash
+docker compose -f docker-compose-strayos-deploy-staging.yml ps
+docker compose -f docker-compose-strayos-deploy-staging.yml logs
+docker compose -f docker-compose-strayos-deploy-staging.yml down
+```
+
+Normal `down` retains staging's cache and monitoring volumes. Do not use `--volumes` for routine restarts. Bootstrap does not copy production/ODP `.env` files or registry credentials; the pipeline performs its own remote Docker Hub login.
+
+Routine `docker compose restart` retains the existing containers' commit-tagged images. Before manually running `up` for workers after a pipeline deployment, set `TITILER_IMAGE` to the intended commit-specific tag; do not inadvertently switch back to the Compose file's floating/bootstrap default.
+
+### Emergency placeholder-site rollback
+
+Only when deliberately taking staging TiTiler offline, run these commands on the staging VM to restore the retained host Nginx placeholder site:
+
+```bash
+cd ~/strayos-titiler
+docker compose -f docker-compose-strayos-deploy-staging.yml stop nginx
+sudo systemctl unmask nginx.service
+sudo systemctl enable --now nginx.service
+```
+
+This restores only the static placeholder, not the TiTiler API. Before returning to containerized service, stop and disable the host unit, mask it again, and then start the Compose Nginx:
+
+```bash
+sudo systemctl disable --now nginx.service
+sudo systemctl mask nginx.service
+docker compose -f docker-compose-strayos-deploy-staging.yml up -d --wait --pull never --no-deps nginx
+```
+
+### Initial staging verification: Oct-21-2026
+
+- All ten staging containers started; all three TiTiler workers and containerized Nginx passed their healthchecks. Host Nginx is stopped and masked.
+- Public `/healthz` returned HTTP/2 200 with the same TiTiler/geospatial versions as production and ODP. Public HTTP redirects to HTTPS, `/grafana/` redirects to its login page, and `/metrics` returns 403.
+- A real Azure Blob DSM COG returned metadata, staging-host TileJSON URLs, and a valid PNG tile. Repeated tile and COG-validation requests demonstrated `X-TiTiler-Cache: MISS` followed by `HIT`.
+- All five Prometheus targets were `up`: three TiTiler workers, node-exporter, and cAdvisor. Loki and Grafana health endpoints passed. Grafana authenticated with the generated admin password and provisioned both datasources and two dashboards. Alloy delivered structured staging Nginx API events into staging's Loki store.
+- Production and ODP public healthchecks remained successful; neither deployment's Compose, Nginx, Prometheus, or Alloy definitions were changed.
+- This was a manual bootstrap from the local working tree, not a Bitbucket pipeline run. Publish and merge the `add-titiler-staging` implementation branch into `main`, then point the remote `staging` branch at the chosen commit to verify its first automated build, registry publication, and deploy. End-to-end Bitbucket verification remains pending until that first run.
+
+### Deployment configuration checks
+
+With the development dependencies installed, run `python -m pytest tests/test_deployment_configs.py` from the repository virtual environment. These checks compare staging against ODP, resolve pipeline YAML anchors, validate shell syntax, and verify separate branch/image/VM selection without running cloud or deployment commands. Container tools can separately validate Nginx (`nginx -t`), Prometheus (`promtool check config`), and Alloy (`alloy validate`).
+
 ## Caching
 
 ### Nginx Response Cache
@@ -334,7 +484,7 @@ Nginx uses the persistent `nginx-cache` volume for a shared 21 GiB disk cache an
 
 The zone name `tiles` does not restrict the cache to tile endpoints. The tile, COG statistics, and COG validation locations all use `proxy_cache tiles`, sharing one key-index capacity and one disk-cache budget within that deployment. There is no separate allocation or reserved quota per endpoint; the path in the cache key keeps their entries distinct. The memory index stores keys and metadata, while response bodies are stored on disk.
 
-Production, ODP, development, and Edge Nginx include `X-TiTiler-Cache` on responses for cache-enabled requests. It exposes Nginx's `$upstream_cache_status` (for example, `MISS` when fetched from the backend, `HIT` when served from the cache, or `STALE` when serving an expired entry). Nginx omits the header when there is no cache status, such as on non-cached endpoints. This diagnostic header does not change caching behavior and can be inspected in browser developer tools; `Cache-Control` alone does not identify a cache hit.
+Production, ODP, staging, development, and Edge Nginx include `X-TiTiler-Cache` on responses for cache-enabled requests. It exposes Nginx's `$upstream_cache_status` (for example, `MISS` when fetched from the backend, `HIT` when served from the cache, or `STALE` when serving an expired entry). Nginx omits the header when there is no cache status, such as on non-cached endpoints. This diagnostic header does not change caching behavior and can be inspected in browser developer tools; `Cache-Control` alone does not identify a cache hit.
 
 Successful GET responses advertise a 90-minute browser lifetime through `Cache-Control`. Nginx preserves that client header but marks successful cached responses fresh for 48 hours. Entries inactive for 48 hours or displaced as the disk cache approaches 21 GiB or the key index fills may be removed earlier. The volume survives normal container recreation but not volume deletion, explicit purging, or disk loss.
 
@@ -346,7 +496,7 @@ Size for distinct cache keys rather than total requests: repeat requests for the
 
 | Deployment | Cache-key index | Approximate combined key capacity |
 | --- | --- | --- |
-| Production, ODP, development, and edge | `keys_zone=tiles:128m` | 1,024,000 keys |
+| Production, ODP, staging, development, and edge | `keys_zone=tiles:128m` | 1,024,000 keys |
 
 The 128 MiB index is sized above the roughly 650,000 entries that fill the 21 GiB disk cache at the observed production average. The previous 10 MiB zone held roughly 80,000 keys; 32 MiB would hold only about 256,000. Each zone is shared within its Nginx deployment, not allocated per TiTiler worker or per endpoint.
 
@@ -362,7 +512,7 @@ These are workload-dependent disk estimates, not entry-count guarantees. The pro
 
 ### GDAL Cache Behavior
 
-`VSI_CACHE=FALSE` disables the per-file-handle byte-range cache because datasets are opened and closed per request. `GDAL_CACHEMAX=1024` is a ceiling for decoded blocks held by open datasets, not a startup allocation. Production and ODP also provide a process-wide 200,000,000-byte `/vsicurl/` cache per backend, which can reuse downloaded ranges across dataset opens until eviction or worker restart. Development does not set this cache size explicitly.
+`VSI_CACHE=FALSE` disables the per-file-handle byte-range cache because datasets are opened and closed per request. `GDAL_CACHEMAX=1024` is a ceiling for decoded blocks held by open datasets, not a startup allocation. Production, ODP, and staging also provide a process-wide 200,000,000-byte `/vsicurl/` cache per backend, which can reuse downloaded ranges across dataset opens until eviction or worker restart. Development does not set this cache size explicitly.
 
 ### Memory Budget
 
@@ -377,13 +527,13 @@ Nginx response-cache key index = 128 MiB shared within this deployment
 32 GiB total RAM shared by GDAL cache, Python, Nginx, OS, request buffers, Azure Blob connections
 ```
 
-Cache ceilings are not reserved allocations; backend memory must also accommodate Python, native libraries, request buffers, and other allocations. The three-worker ODP budget is listed under **Azure Infrastructure: ODP**.
+Cache ceilings are not reserved allocations; backend memory must also accommodate Python, native libraries, request buffers, and other allocations. The three-worker ODP budget is listed under **Azure Infrastructure: ODP**; staging uses the same budget.
 
 ## Request Routing
 
 Nginx uses `hash $titiler_hash_key consistent`, keyed by the `url` query parameter when present and otherwise by the full request URI. Requests for one raster therefore usually reach the same backend and reuse that process's `/vsicurl/` cache.
 
-Routing is best-effort: failed requests can spill to another backend, trading some cache duplication for availability. A hot raster may also concentrate CPU load on one worker; distributing it would improve CPU balance but reduce cache locality. Production uses six single-worker backends on eight vCPUs; ODP uses three on four vCPUs. This sizing leaves nominal CPU headroom for Nginx, the OS, and supporting services; cores are not pinned or reserved.
+Routing is best-effort: failed requests can spill to another backend, trading some cache duplication for availability. A hot raster may also concentrate CPU load on one worker; distributing it would improve CPU balance but reduce cache locality. Production uses six single-worker backends on eight vCPUs; ODP and staging each use three on four vCPUs. This sizing leaves nominal CPU headroom for Nginx, the OS, and supporting services; cores are not pinned or reserved.
 
 ## Sources
 
